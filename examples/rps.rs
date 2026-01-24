@@ -175,6 +175,7 @@ fn main() {
     let iterations = 10_000;
     println!("Training for {} iterations...", iterations);
     solver.train(&game, iterations);
+    println!("Exploitability: {:.6}", solver.exploitability(&game));
 
     // Print results
     println!();

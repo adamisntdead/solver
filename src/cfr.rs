@@ -299,22 +299,130 @@ impl CfrSolver {
     /// Computes the exploitability of the current average strategy.
     /// Lower values indicate closer approximation to Nash equilibrium.
     ///
-    /// For n-player games, this returns the sum of each player's
-    /// best response improvement over their current strategy.
+    /// For n-player games, this returns the average of each player's
+    /// best response value (should converge to 0 for zero-sum games).
     pub fn exploitability<G: Game>(&self, game: &G) -> f64 {
         let num_players = game.num_players();
         let mut total = 0.0;
 
         for player in 0..num_players {
+            // Two-pass best response for imperfect information games:
+            // 1. Compute expected value of each action at each info set
+            // 2. Use best action for each info set to compute final value
+            let mut info_set_values: HashMap<String, Vec<f64>> = HashMap::new();
+            let mut info_set_reach: HashMap<String, f64> = HashMap::new();
+
             let root = game.root();
-            total += self.best_response_value(&root, player, num_players);
+            self.compute_br_action_values(
+                &root,
+                player,
+                num_players,
+                1.0,
+                &mut info_set_values,
+                &mut info_set_reach,
+            );
+
+            // Build best response strategy: pick best action at each info set
+            let mut br_strategy: HashMap<String, usize> = HashMap::new();
+            for (info_key, action_values) in &info_set_values {
+                let best_action = action_values
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                br_strategy.insert(info_key.clone(), best_action);
+            }
+
+            // Compute value using best response strategy
+            let br_value =
+                self.compute_br_value(&root, player, num_players, &br_strategy);
+            total += br_value;
         }
 
         total / num_players as f64
     }
 
-    /// Computes the best response value for a player against the current average strategy.
-    fn best_response_value<N: GameNode>(
+    /// First pass: compute expected value of each action at each of the player's info sets.
+    fn compute_br_action_values<N: GameNode>(
+        &self,
+        node: &N,
+        player: usize,
+        num_players: usize,
+        reach_prob: f64,
+        info_set_values: &mut HashMap<String, Vec<f64>>,
+        info_set_reach: &mut HashMap<String, f64>,
+    ) {
+        if reach_prob < 1e-10 {
+            return;
+        }
+
+        if node.is_terminal() {
+            return;
+        }
+
+        let num_actions = node.num_actions();
+
+        if node.is_chance() {
+            let prob = 1.0 / num_actions as f64;
+            for action in 0..num_actions {
+                let child = node.play(action);
+                self.compute_br_action_values(
+                    &child,
+                    player,
+                    num_players,
+                    reach_prob * prob,
+                    info_set_values,
+                    info_set_reach,
+                );
+            }
+            return;
+        }
+
+        let current_player = node.current_player();
+
+        if current_player == player {
+            // Player's decision node: compute value of each action
+            let info_key = node.info_set_key();
+
+            // Initialize if needed
+            if !info_set_values.contains_key(&info_key) {
+                info_set_values.insert(info_key.clone(), vec![0.0; num_actions]);
+                info_set_reach.insert(info_key.clone(), 0.0);
+            }
+
+            *info_set_reach.get_mut(&info_key).unwrap() += reach_prob;
+
+            for action in 0..num_actions {
+                let child = node.play(action);
+                let action_value = self.compute_terminal_value(&child, player, num_players);
+                info_set_values.get_mut(&info_key).unwrap()[action] += reach_prob * action_value;
+            }
+        } else {
+            // Opponent's decision: follow their average strategy
+            let info_key = node.info_set_key();
+            let strategy = self
+                .info_sets
+                .get(&info_key)
+                .map(|is| is.average_strategy())
+                .unwrap_or_else(|| vec![1.0 / num_actions as f64; num_actions]);
+
+            for action in 0..num_actions {
+                let child = node.play(action);
+                self.compute_br_action_values(
+                    &child,
+                    player,
+                    num_players,
+                    reach_prob * strategy[action],
+                    info_set_values,
+                    info_set_reach,
+                );
+            }
+        }
+    }
+
+    /// Helper to compute expected terminal value from a node (opponents follow average strategy).
+    fn compute_terminal_value<N: GameNode>(
         &self,
         node: &N,
         player: usize,
@@ -330,25 +438,63 @@ impl CfrSolver {
             let mut expected_value = 0.0;
             for action in 0..num_actions {
                 let child = node.play(action);
-                expected_value += self.best_response_value(&child, player, num_players);
+                expected_value += self.compute_terminal_value(&child, player, num_players);
+            }
+            return expected_value / num_actions as f64;
+        }
+
+        let info_key = node.info_set_key();
+
+        // All players (including the best-responder) follow average strategy here
+        // This is used to evaluate what happens after an action is taken
+        let strategy = self
+            .info_sets
+            .get(&info_key)
+            .map(|is| is.average_strategy())
+            .unwrap_or_else(|| vec![1.0 / num_actions as f64; num_actions]);
+
+        let mut expected_value = 0.0;
+        for action in 0..num_actions {
+            let child = node.play(action);
+            expected_value +=
+                strategy[action] * self.compute_terminal_value(&child, player, num_players);
+        }
+        expected_value
+    }
+
+    /// Second pass: compute value using the best response strategy.
+    fn compute_br_value<N: GameNode>(
+        &self,
+        node: &N,
+        player: usize,
+        num_players: usize,
+        br_strategy: &HashMap<String, usize>,
+    ) -> f64 {
+        if node.is_terminal() {
+            return node.payoff(player);
+        }
+
+        let num_actions = node.num_actions();
+
+        if node.is_chance() {
+            let mut expected_value = 0.0;
+            for action in 0..num_actions {
+                let child = node.play(action);
+                expected_value += self.compute_br_value(&child, player, num_players, br_strategy);
             }
             return expected_value / num_actions as f64;
         }
 
         let current_player = node.current_player();
+        let info_key = node.info_set_key();
 
         if current_player == player {
-            // Maximizing player: choose best action
-            let mut best_value = f64::NEG_INFINITY;
-            for action in 0..num_actions {
-                let child = node.play(action);
-                let value = self.best_response_value(&child, player, num_players);
-                best_value = best_value.max(value);
-            }
-            best_value
+            // Use best response action
+            let action = *br_strategy.get(&info_key).unwrap_or(&0);
+            let child = node.play(action);
+            self.compute_br_value(&child, player, num_players, br_strategy)
         } else {
-            // Other players play according to their average strategy
-            let info_key = node.info_set_key();
+            // Opponent follows average strategy
             let strategy = self
                 .info_sets
                 .get(&info_key)
@@ -359,7 +505,7 @@ impl CfrSolver {
             for action in 0..num_actions {
                 let child = node.play(action);
                 expected_value +=
-                    strategy[action] * self.best_response_value(&child, player, num_players);
+                    strategy[action] * self.compute_br_value(&child, player, num_players, br_strategy);
             }
             expected_value
         }
