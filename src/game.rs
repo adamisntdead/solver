@@ -23,12 +23,13 @@ pub trait GameNode: Clone {
     /// Only valid when `is_terminal()` returns `true`.
     fn payoff(&self, player: usize) -> f64;
 
-    /// Returns the information set key for the current player.
+    /// Returns the information set ID for the current player.
     /// Nodes in the same information set are indistinguishable to the player.
-    fn info_set_key(&self) -> String;
+    /// IDs must be in range `0..Game::num_info_sets()`.
+    fn info_set_id(&self) -> usize;
 }
 
-/// Trait representing a two-player zero-sum game.
+/// Trait representing a game (typically two-player zero-sum).
 pub trait Game {
     /// The type of nodes in this game's tree.
     type Node: GameNode;
@@ -40,4 +41,8 @@ pub trait Game {
     fn num_players(&self) -> usize {
         2
     }
+
+    /// Returns the total number of information sets in the game.
+    /// Used to pre-allocate storage for strategies.
+    fn num_info_sets(&self) -> usize;
 }
