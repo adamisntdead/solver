@@ -6,8 +6,12 @@ import init, {
     parse_bet_size_preview,
     get_node_at_path,
     get_action_result,
-    get_default_config
+    get_default_config,
+    get_tree_root,
+    get_tree_children
 } from '../pkg/solver_wasm.js';
+
+import * as TreeView from './tree-view.js';
 
 // Global state
 let wasmLoaded = false;
@@ -42,6 +46,11 @@ const elements = {
     loadInput: document.getElementById('load-input'),
     backBtn: document.getElementById('back-btn'),
     resetBtn: document.getElementById('reset-btn'),
+
+    // Tree view
+    treeView: document.getElementById('tree-view'),
+    expandAllBtn: document.getElementById('expand-all-btn'),
+    collapseAllBtn: document.getElementById('collapse-all-btn'),
 
     // Tree navigator
     streetBadge: document.getElementById('street-badge'),
@@ -86,6 +95,14 @@ async function initialize() {
         wasmLoaded = true;
         setStatus('Ready', 'success');
 
+        // Initialize tree view
+        TreeView.initTreeView(elements.treeView, handleTreeNodeSelect);
+
+        // Expose toggle function for tree view clicks
+        window.treeViewToggle = (path) => {
+            TreeView.toggleNode(path, getTreeChildren);
+        };
+
         // Load default config
         const defaultConfig = get_default_config();
         currentConfig = JSON.parse(defaultConfig);
@@ -116,6 +133,10 @@ function setupEventListeners() {
     elements.backBtn.addEventListener('click', navigateBack);
     elements.resetBtn.addEventListener('click', resetNavigation);
 
+    // Tree view controls
+    elements.expandAllBtn.addEventListener('click', handleExpandAll);
+    elements.collapseAllBtn.addEventListener('click', handleCollapseAll);
+
     // Bet size preview
     elements.previewSize.addEventListener('input', updateBetSizePreview);
     elements.previewPot.addEventListener('input', updateBetSizePreview);
@@ -123,7 +144,7 @@ function setupEventListeners() {
 }
 
 // === Build Tree ===
-function buildTree() {
+async function buildTree() {
     if (!wasmLoaded) {
         setStatus('WASM not loaded', 'error');
         return;
@@ -156,6 +177,9 @@ function buildTree() {
 
         treeBuilt = true;
         currentPath = '';
+
+        // Load tree view
+        await loadTreeView();
 
         // Navigate to root
         navigateToPath('');
@@ -301,13 +325,16 @@ function navigateToPath(path) {
         updateNodeDisplay(nodeState);
         updateNavigationControls();
 
+        // Sync tree view selection
+        TreeView.setSelectedPath(path);
+
     } catch (error) {
         setStatus(`Navigation error: ${error.message}`, 'error');
         console.error('Navigation error:', error);
     }
 }
 
-function handleActionClick(actionIndex) {
+async function handleActionClick(actionIndex) {
     if (!wasmLoaded || !treeBuilt) return;
 
     try {
@@ -322,6 +349,10 @@ function handleActionClick(actionIndex) {
         currentPath = nodeState.path;
         updateNodeDisplay(nodeState);
         updateNavigationControls();
+
+        // Sync tree view - expand path and select
+        await TreeView.expandToPath(currentPath, getTreeChildren);
+        TreeView.setSelectedPath(currentPath);
 
     } catch (error) {
         setStatus(`Action error: ${error.message}`, 'error');
@@ -522,6 +553,51 @@ function updateBetSizePreview() {
     } catch (error) {
         elements.previewResult.textContent = error.message;
         elements.previewResult.className = 'preview-result invalid';
+    }
+}
+
+// === Tree View Helpers ===
+async function getTreeChildren(path) {
+    if (!wasmLoaded || !currentConfig) return [];
+
+    try {
+        const configJson = JSON.stringify(currentConfig);
+        const children = get_tree_children(configJson, path);
+        return children || [];
+    } catch (error) {
+        console.error('Error getting tree children:', error);
+        return [];
+    }
+}
+
+function handleTreeNodeSelect(path) {
+    // Navigate to the selected node (this also syncs tree view selection)
+    navigateToPath(path);
+}
+
+async function handleExpandAll() {
+    if (!treeBuilt) return;
+    setStatus('Expanding tree...');
+    await TreeView.expandAll(getTreeChildren, 3);
+    setStatus('Tree expanded', 'success');
+}
+
+function handleCollapseAll() {
+    TreeView.collapseAll();
+}
+
+async function loadTreeView() {
+    if (!wasmLoaded || !currentConfig) return;
+
+    try {
+        const configJson = JSON.stringify(currentConfig);
+        const root = get_tree_root(configJson);
+        if (root) {
+            TreeView.setTreeData(root);
+        }
+    } catch (error) {
+        console.error('Error loading tree view:', error);
+        TreeView.clearTree();
     }
 }
 

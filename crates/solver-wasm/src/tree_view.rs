@@ -371,3 +371,275 @@ fn error_state(message: &str) -> NodeState {
         error: Some(message.to_string()),
     }
 }
+
+// === Tree View Types ===
+
+/// A node in the collapsible tree view.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TreeNodeInfo {
+    /// Path to this node
+    pub path: String,
+
+    /// Node type: "player", "chance", "terminal"
+    pub node_type: String,
+
+    /// Display label for this node
+    pub label: String,
+
+    /// Action type for styling (fold, check, call, bet, raise, allin)
+    pub action_type: Option<String>,
+
+    /// Player position name (if player node)
+    pub player_name: Option<String>,
+
+    /// Terminal result (if terminal)
+    pub terminal_result: Option<String>,
+
+    /// Street name
+    pub street: String,
+
+    /// Whether this node has children (for expand/collapse)
+    pub has_children: bool,
+
+    /// Number of nodes in subtree (for display)
+    pub subtree_size: usize,
+
+    /// Children (only populated when expanded)
+    pub children: Vec<TreeNodeInfo>,
+}
+
+/// Get the root and its immediate children for the tree view.
+pub fn get_tree_root_internal(config_json: &str) -> TreeNodeInfo {
+    let spot_config: SpotConfig = match serde_json::from_str(config_json) {
+        Ok(c) => c,
+        Err(e) => {
+            return error_tree_node(&format!("Failed to parse config: {}", e));
+        }
+    };
+
+    let tree_config = match convert_config(&spot_config) {
+        Ok(c) => c,
+        Err(e) => {
+            return error_tree_node(&e);
+        }
+    };
+
+    let tree = match ActionTree::new(tree_config) {
+        Ok(t) => t,
+        Err(e) => {
+            return error_tree_node(&e);
+        }
+    };
+
+    let positions = Position::all_for_players(spot_config.num_players);
+    build_tree_node(&tree.root, "", None, positions, Street::Preflop, true)
+}
+
+/// Get children of a node at the given path.
+pub fn get_tree_children_internal(config_json: &str, path: &str) -> Vec<TreeNodeInfo> {
+    let spot_config: SpotConfig = match serde_json::from_str(config_json) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    let tree_config = match convert_config(&spot_config) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    let tree = match ActionTree::new(tree_config) {
+        Ok(t) => t,
+        Err(_) => return vec![],
+    };
+
+    let positions = Position::all_for_players(spot_config.num_players);
+
+    // Navigate to the node
+    let node = navigate_to_node(&tree.root, path);
+    let (node, street) = match node {
+        Some((n, s)) => (n, s),
+        None => return vec![],
+    };
+
+    // Get children
+    get_children_info(node, path, positions, street)
+}
+
+fn navigate_to_node<'a>(root: &'a ActionTreeNode, path: &str) -> Option<(&'a ActionTreeNode, Street)> {
+    if path.is_empty() {
+        return Some((root, Street::Preflop));
+    }
+
+    let indices: Vec<usize> = path
+        .split('.')
+        .map(|s| s.parse::<usize>())
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+
+    let mut current = root;
+    let mut street = Street::Preflop;
+
+    for &idx in &indices {
+        match current {
+            ActionTreeNode::Player { children, .. } => {
+                current = children.get(idx)?;
+            }
+            ActionTreeNode::Chance { child, street: next_street } => {
+                street = *next_street;
+                current = child;
+            }
+            ActionTreeNode::Terminal { .. } => return None,
+        }
+
+        // Skip through chance nodes
+        while let ActionTreeNode::Chance { child, street: next_street } = current {
+            street = *next_street;
+            current = child;
+        }
+    }
+
+    Some((current, street))
+}
+
+fn get_children_info(
+    node: &ActionTreeNode,
+    parent_path: &str,
+    positions: &[Position],
+    street: Street,
+) -> Vec<TreeNodeInfo> {
+    match node {
+        ActionTreeNode::Player { actions, children, .. } => {
+            actions
+                .iter()
+                .zip(children.iter())
+                .enumerate()
+                .map(|(i, (action, child))| {
+                    let child_path = if parent_path.is_empty() {
+                        i.to_string()
+                    } else {
+                        format!("{}.{}", parent_path, i)
+                    };
+
+                    // Skip through chance nodes for the child
+                    let (actual_child, child_street) = skip_chance_nodes(child, street);
+
+                    build_tree_node(
+                        actual_child,
+                        &child_path,
+                        Some(action),
+                        positions,
+                        child_street,
+                        false, // Don't include children recursively
+                    )
+                })
+                .collect()
+        }
+        _ => vec![],
+    }
+}
+
+fn skip_chance_nodes(node: &ActionTreeNode, street: Street) -> (&ActionTreeNode, Street) {
+    let mut current = node;
+    let mut current_street = street;
+
+    while let ActionTreeNode::Chance { child, street: next_street } = current {
+        current_street = *next_street;
+        current = child;
+    }
+
+    (current, current_street)
+}
+
+fn build_tree_node(
+    node: &ActionTreeNode,
+    path: &str,
+    action: Option<&Action>,
+    positions: &[Position],
+    street: Street,
+    include_children: bool,
+) -> TreeNodeInfo {
+    let (node_type, label, action_type, player_name, terminal_result, has_children) = match node {
+        ActionTreeNode::Player { player, actions, .. } => {
+            let pos_name = positions[*player].short_name().to_string();
+            let label = if let Some(a) = action {
+                a.display()
+            } else {
+                format!("{} to act", pos_name)
+            };
+            let act_type = action.map(action_type_name);
+            (
+                "player".to_string(),
+                label,
+                act_type,
+                Some(pos_name),
+                None,
+                !actions.is_empty(),
+            )
+        }
+        ActionTreeNode::Chance { .. } => {
+            // This shouldn't happen since we skip chance nodes
+            ("chance".to_string(), "Deal".to_string(), None, None, None, true)
+        }
+        ActionTreeNode::Terminal { result, .. } => {
+            let term_str = match result {
+                TerminalResult::Fold { winner } => {
+                    format!("{} wins", positions[*winner].short_name())
+                }
+                TerminalResult::Showdown => "Showdown".to_string(),
+                TerminalResult::AllInRunout { num_players } => {
+                    format!("All-in ({})", num_players)
+                }
+            };
+            let label = if let Some(a) = action {
+                format!("{} -> {}", a.display(), term_str)
+            } else {
+                term_str.clone()
+            };
+            let act_type = action.map(action_type_name);
+            (
+                "terminal".to_string(),
+                label,
+                act_type,
+                None,
+                Some(term_str),
+                false,
+            )
+        }
+    };
+
+    let subtree_size = node.node_count();
+
+    let children = if include_children && has_children {
+        get_children_info(node, path, positions, street)
+    } else {
+        vec![]
+    };
+
+    TreeNodeInfo {
+        path: path.to_string(),
+        node_type,
+        label,
+        action_type,
+        player_name,
+        terminal_result,
+        street: street.short_name().to_string(),
+        has_children,
+        subtree_size,
+        children,
+    }
+}
+
+fn error_tree_node(message: &str) -> TreeNodeInfo {
+    TreeNodeInfo {
+        path: "".to_string(),
+        node_type: "error".to_string(),
+        label: message.to_string(),
+        action_type: None,
+        player_name: None,
+        terminal_result: None,
+        street: "".to_string(),
+        has_children: false,
+        subtree_size: 0,
+        children: vec![],
+    }
+}

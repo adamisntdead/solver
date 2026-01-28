@@ -332,6 +332,20 @@ pub fn get_action_result(config_json: &str, current_path: &str, action_index: us
     serde_wasm_bindgen::to_value(&result).unwrap()
 }
 
+/// Get the tree root with its immediate children for the tree view.
+#[wasm_bindgen]
+pub fn get_tree_root(config_json: &str) -> JsValue {
+    let result = tree_view::get_tree_root_internal(config_json);
+    serde_wasm_bindgen::to_value(&result).unwrap()
+}
+
+/// Get children of a node at the given path for lazy loading.
+#[wasm_bindgen]
+pub fn get_tree_children(config_json: &str, path: &str) -> JsValue {
+    let result = tree_view::get_tree_children_internal(config_json, path);
+    serde_wasm_bindgen::to_value(&result).unwrap()
+}
+
 /// Get a default config as JSON.
 #[wasm_bindgen]
 pub fn get_default_config() -> String {

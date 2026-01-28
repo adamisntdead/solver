@@ -126,52 +126,66 @@
                 </div>
             </aside>
 
-            <!-- Center Panel: Tree Navigator -->
+            <!-- Center Panel: Tree View + Navigator -->
             <main class="tree-panel">
-                <div class="tree-navigator">
-                    <div class="node-state" id="node-state">
-                        <div class="state-header">
-                            <span class="street-badge" id="street-badge">PREFLOP</span>
-                            <span class="pot-display">Pot: <span id="pot-value">3</span></span>
+                <div class="center-split">
+                    <!-- Left: Collapsible Tree View -->
+                    <div class="tree-view-container">
+                        <div class="tree-view-header">
+                            <h2>Game Tree</h2>
+                            <div class="tree-controls">
+                                <button id="expand-all-btn" class="btn btn-small" title="Expand All">+</button>
+                                <button id="collapse-all-btn" class="btn btn-small" title="Collapse All">-</button>
+                            </div>
                         </div>
-
-                        <div class="player-info" id="player-info">
-                            <span class="player-badge" id="player-badge">BTN</span>
-                            <span class="player-text">to act</span>
-                            <span class="stack-display">Stack: <span id="stack-value">99</span></span>
+                        <div class="tree-view" id="tree-view">
+                            <!-- Tree nodes will be populated here -->
+                            <div class="tree-loading">Build tree to view</div>
                         </div>
+                    </div>
 
-                        <div class="actions-container" id="actions-container">
-                            <h3>Available Actions</h3>
-                            <div class="action-buttons" id="action-buttons">
-                                <!-- Actions will be populated here -->
-                                <button class="action-btn action-fold">Fold</button>
-                                <button class="action-btn action-call">Call 2</button>
-                                <button class="action-btn action-raise">Raise 6</button>
-                                <button class="action-btn action-allin">All-in 100</button>
+                    <!-- Right: Click-through Navigator -->
+                    <div class="tree-navigator">
+                        <div class="node-state" id="node-state">
+                            <div class="state-header">
+                                <span class="street-badge" id="street-badge">PREFLOP</span>
+                                <span class="pot-display">Pot: <span id="pot-value">3</span></span>
+                            </div>
+
+                            <div class="player-info" id="player-info">
+                                <span class="player-badge" id="player-badge">BTN</span>
+                                <span class="player-text">to act</span>
+                                <span class="stack-display">Stack: <span id="stack-value">99</span></span>
+                            </div>
+
+                            <div class="actions-container" id="actions-container">
+                                <h3>Available Actions</h3>
+                                <div class="action-buttons" id="action-buttons">
+                                    <!-- Actions will be populated here -->
+                                </div>
+                            </div>
+
+                            <div class="terminal-result" id="terminal-result" style="display: none;">
+                                <span class="terminal-badge">TERMINAL</span>
+                                <span class="terminal-text" id="terminal-text">Showdown</span>
                             </div>
                         </div>
 
-                        <div class="terminal-result" id="terminal-result" style="display: none;">
-                            <span class="terminal-badge">TERMINAL</span>
-                            <span class="terminal-text" id="terminal-text">Showdown</span>
+                        <div class="history-panel">
+                            <h3>Action History</h3>
+                            <div class="history-list" id="history-list">
+                                <!-- History items will be populated here -->
+                            </div>
                         </div>
-                    </div>
 
-                    <div class="history-panel">
-                        <h3>Action History</h3>
-                        <div class="history-list" id="history-list">
-                            <!-- History items will be populated here -->
+                        <div class="navigation-controls">
+                            <button id="back-btn" class="btn btn-nav" disabled>Back</button>
+                            <button id="reset-btn" class="btn btn-nav">Reset</button>
                         </div>
-                    </div>
 
-                    <div class="navigation-controls">
-                        <button id="back-btn" class="btn btn-nav" disabled>Back</button>
-                        <button id="reset-btn" class="btn btn-nav">Reset</button>
-                    </div>
-
-                    <div class="breadcrumb" id="breadcrumb">
-                        <span class="crumb active">Root</span>
+                        <div class="breadcrumb" id="breadcrumb">
+                            <span class="crumb active">Root</span>
+                        </div>
                     </div>
                 </div>
             </main>
