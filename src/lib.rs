@@ -17,6 +17,6 @@ pub mod cfr;
 pub mod game;
 pub mod info_abstraction;
 
-pub use cfr::{CfrSolver, DiscountParams};
+pub use cfr::{CfrSolver, CfrVariant, DiscountParams};
 pub use game::{Game, GameNode};
 pub use info_abstraction::{IdentityAbstraction, InfoAbstraction};

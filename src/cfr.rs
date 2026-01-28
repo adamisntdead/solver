@@ -1,4 +1,6 @@
 use crate::game::{Game, GameNode};
+use rand::prelude::*;
+use rand::rngs::SmallRng;
 
 /// Information set data tracked during CFR.
 #[derive(Clone, Default)]
@@ -62,6 +64,20 @@ impl InfoSetData {
     }
 }
 
+/// CFR algorithm variant.
+#[derive(Clone, Copy, Default)]
+pub enum CfrVariant {
+    /// CFR+ with regret matching+ and linear averaging.
+    /// Fastest convergence for most games.
+    #[default]
+    CfrPlus,
+    /// Linear CFR: both regrets and strategies use t/(t+1) discounting.
+    /// Good balance of speed and stability.
+    LinearCfr,
+    /// Discounted CFR with configurable discount parameters.
+    Discounted(DiscountParams),
+}
+
 /// Discount parameters for Discounted CFR.
 #[derive(Clone, Copy)]
 pub struct DiscountParams {
@@ -97,49 +113,151 @@ impl DiscountParams {
     }
 }
 
-/// Discounted CFR solver for n-player games.
+/// CFR solver for n-player games.
+/// Supports CFR+ (default, fastest) and Discounted CFR variants.
 pub struct CfrSolver {
     /// Data for each information set, indexed by info set ID.
     info_sets: Vec<InfoSetData>,
-    /// Discount parameters.
-    params: DiscountParams,
+    /// CFR variant to use.
+    variant: CfrVariant,
     /// Current iteration number.
     iteration: u32,
 }
 
 impl CfrSolver {
-    /// Creates a new CFR solver for the given game.
-    pub fn new<G: Game>(game: &G, params: DiscountParams) -> Self {
+    /// Creates a new CFR solver with the specified variant.
+    pub fn new<G: Game>(game: &G, variant: CfrVariant) -> Self {
         let num_info_sets = game.num_info_sets();
         Self {
             info_sets: vec![InfoSetData::default(); num_info_sets],
-            params,
+            variant,
             iteration: 0,
         }
     }
 
-    /// Creates a new CFR solver with default discounted CFR parameters.
+    /// Creates a new CFR+ solver (fastest convergence).
     pub fn new_with_defaults<G: Game>(game: &G) -> Self {
-        Self::new(game, DiscountParams::default())
+        Self::new(game, CfrVariant::CfrPlus)
+    }
+
+    /// Creates a new Discounted CFR solver.
+    pub fn new_discounted<G: Game>(game: &G, params: DiscountParams) -> Self {
+        Self::new(game, CfrVariant::Discounted(params))
     }
 
     /// Runs CFR for the specified number of iterations.
+    ///
+    /// This uses full enumeration of chance nodes, which can be slow for games
+    /// with many chance outcomes. For such games, use `train_sampled` instead.
+    ///
+    /// Uses alternating updates: each iteration updates only one player.
     pub fn train<G: Game>(&mut self, game: &G, iterations: u32) {
         let num_players = game.num_players();
         let mut reach_probs = vec![1.0; num_players];
         // Scratch space for strategy computation (max 10 actions should cover most games)
         let mut strategy_buf = [0.0f64; 10];
 
-        for _ in 0..iterations {
+        for i in 0..iterations {
             self.iteration += 1;
 
-            for player in 0..num_players {
-                let root = game.root();
-                reach_probs.fill(1.0);
-                self.cfr(&root, player, num_players, &reach_probs, &mut strategy_buf);
-            }
+            // Alternating updates: only update one player per iteration
+            let player = (i as usize) % num_players;
+            let root = game.root();
+            reach_probs.fill(1.0);
+            self.cfr(&root, player, num_players, &reach_probs, &mut strategy_buf);
 
-            self.apply_discounts();
+            self.post_iteration_update();
+        }
+    }
+
+    /// Runs Monte Carlo CFR with chance sampling.
+    ///
+    /// Instead of enumerating all chance outcomes, this samples one outcome per
+    /// iteration, making it much faster for games with many chance outcomes
+    /// (like poker deals). Convergence is still guaranteed in expectation.
+    ///
+    /// Uses alternating updates: each iteration updates only one player,
+    /// cycling through players. This matches Gambit's approach and improves
+    /// convergence for zero-sum games.
+    pub fn train_sampled<G: Game>(&mut self, game: &G, iterations: u32) {
+        let num_players = game.num_players();
+        let mut reach_probs = vec![1.0; num_players];
+        let mut strategy_buf = [0.0f64; 10];
+        let mut rng = SmallRng::from_entropy();
+
+        for i in 0..iterations {
+            self.iteration += 1;
+
+            // Alternating updates: only update one player per iteration
+            let player = (i as usize) % num_players;
+            let root = game.root();
+            reach_probs.fill(1.0);
+            self.cfr_sampled(&root, player, num_players, &reach_probs, &mut strategy_buf, &mut rng);
+
+            self.post_iteration_update();
+        }
+    }
+
+    /// Applies post-iteration updates based on CFR variant.
+    fn post_iteration_update(&mut self) {
+        match self.variant {
+            CfrVariant::CfrPlus => {
+                // CFR+: Floor all regrets at 0 (regret matching+)
+                // Strategy averaging is handled in cfr_sampled with linear weighting
+                for info_set in &mut self.info_sets {
+                    if !info_set.initialized {
+                        continue;
+                    }
+                    for regret in &mut info_set.regret_sum {
+                        if *regret < 0.0 {
+                            *regret = 0.0;
+                        }
+                    }
+                }
+            }
+            CfrVariant::LinearCfr => {
+                // Linear CFR: Apply t/(t+1) discount to both regrets and strategies
+                // This gives more weight to recent iterations
+                let t = self.iteration as f64;
+                let discount = t / (t + 1.0);
+
+                for info_set in &mut self.info_sets {
+                    if !info_set.initialized {
+                        continue;
+                    }
+                    for regret in &mut info_set.regret_sum {
+                        *regret *= discount;
+                    }
+                    for sum in &mut info_set.strategy_sum {
+                        *sum *= discount;
+                    }
+                }
+            }
+            CfrVariant::Discounted(params) => {
+                self.apply_discounts_with_params(&params);
+            }
+        }
+    }
+
+    fn apply_discounts_with_params(&mut self, params: &DiscountParams) {
+        let pos_discount = params.positive_regret_discount(self.iteration);
+        let neg_discount = params.negative_regret_discount(self.iteration);
+        let strat_discount = params.strategy_discount(self.iteration);
+
+        for info_set in &mut self.info_sets {
+            if !info_set.initialized {
+                continue;
+            }
+            for regret in &mut info_set.regret_sum {
+                if *regret > 0.0 {
+                    *regret *= pos_discount;
+                } else {
+                    *regret *= neg_discount;
+                }
+            }
+            for sum in &mut info_set.strategy_sum {
+                *sum *= strat_discount;
+            }
         }
     }
 
@@ -216,34 +334,110 @@ impl CfrSolver {
 
             // Recompute strategy since buffer may have been overwritten by recursion
             info_set.current_strategy(&mut strategy_buf[..num_actions]);
+
+            // CFR+ uses linear averaging (weight by iteration t)
+            // Linear CFR and Discounted CFR use uniform weighting (discounting applied post-iteration)
+            let weight = match self.variant {
+                CfrVariant::CfrPlus => self.iteration as f64,
+                CfrVariant::LinearCfr | CfrVariant::Discounted(_) => 1.0,
+            };
+
             for action in 0..num_actions {
-                info_set.strategy_sum[action] += reach_probs[player] * strategy_buf[action];
+                info_set.strategy_sum[action] += weight * reach_probs[player] * strategy_buf[action];
             }
         }
 
         node_value
     }
 
-    fn apply_discounts(&mut self) {
-        let pos_discount = self.params.positive_regret_discount(self.iteration);
-        let neg_discount = self.params.negative_regret_discount(self.iteration);
-        let strat_discount = self.params.strategy_discount(self.iteration);
+    /// CFR traversal with chance sampling (External Sampling MCCFR).
+    fn cfr_sampled<N: GameNode>(
+        &mut self,
+        node: &N,
+        player: usize,
+        num_players: usize,
+        reach_probs: &[f64],
+        strategy_buf: &mut [f64; 10],
+        rng: &mut SmallRng,
+    ) -> f64 {
+        if node.is_terminal() {
+            return node.payoff(player);
+        }
 
-        for info_set in &mut self.info_sets {
-            if !info_set.initialized {
-                continue;
+        let num_actions = node.num_actions();
+
+        if node.is_chance() {
+            // Sample a single chance outcome instead of enumerating all
+            let action = rng.gen_range(0..num_actions);
+            let child = node.play(action);
+            return self.cfr_sampled(&child, player, num_players, reach_probs, strategy_buf, rng);
+        }
+
+        let current_player = node.current_player();
+        let info_id = node.info_set_id();
+
+        // Initialize info set if needed and get current strategy
+        self.info_sets[info_id].init(num_actions);
+        self.info_sets[info_id].current_strategy(&mut strategy_buf[..num_actions]);
+
+        // Compute action values
+        let mut action_values = [0.0f64; 10];
+        let mut node_value = 0.0;
+
+        let mut child_reach_probs = [0.0f64; 8];
+        child_reach_probs[..num_players].copy_from_slice(&reach_probs[..num_players]);
+        let original_reach = child_reach_probs[current_player];
+
+        for action in 0..num_actions {
+            let child = node.play(action);
+            let action_prob = strategy_buf[action];
+
+            child_reach_probs[current_player] = original_reach * action_prob;
+
+            let child_value = self.cfr_sampled(
+                &child,
+                player,
+                num_players,
+                &child_reach_probs[..num_players],
+                strategy_buf,
+                rng,
+            );
+
+            action_values[action] = child_value;
+            node_value += action_prob * child_value;
+        }
+
+        if current_player == player {
+            let cf_reach: f64 = reach_probs
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i != player)
+                .map(|(_, &p)| p)
+                .product();
+
+            let info_set = &mut self.info_sets[info_id];
+
+            for action in 0..num_actions {
+                let regret = action_values[action] - node_value;
+                info_set.regret_sum[action] += cf_reach * regret;
             }
-            for regret in &mut info_set.regret_sum {
-                if *regret > 0.0 {
-                    *regret *= pos_discount;
-                } else {
-                    *regret *= neg_discount;
-                }
-            }
-            for sum in &mut info_set.strategy_sum {
-                *sum *= strat_discount;
+
+            // Recompute strategy since buffer may have been overwritten by recursion
+            info_set.current_strategy(&mut strategy_buf[..num_actions]);
+
+            // CFR+ uses linear averaging (weight by iteration t)
+            // Linear CFR and Discounted CFR use uniform weighting (discounting applied post-iteration)
+            let weight = match self.variant {
+                CfrVariant::CfrPlus => self.iteration as f64,
+                CfrVariant::LinearCfr | CfrVariant::Discounted(_) => 1.0,
+            };
+
+            for action in 0..num_actions {
+                info_set.strategy_sum[action] += weight * reach_probs[player] * strategy_buf[action];
             }
         }
+
+        node_value
     }
 
     /// Returns the average strategy for a given information set ID.

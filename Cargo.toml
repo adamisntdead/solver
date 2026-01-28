@@ -8,3 +8,5 @@ keywords = ["cfr", "game-theory", "nash-equilibrium", "solver"]
 categories = ["algorithms", "game-development", "mathematics"]
 
 [dependencies]
+rand = { version = "0.8", features = ["small_rng"] }
+rayon = "1.10"
