@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Poker Tree Builder</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <h1>Poker Tree Builder</h1>
+        </header>
+
+        <div class="main-content">
+            <!-- Left Panel: Configuration -->
+            <aside class="config-panel">
+                <section class="config-section">
+                    <h2>Game Setup</h2>
+                    <div class="form-group">
+                        <label for="spot-name">Spot Name</label>
+                        <input type="text" id="spot-name" value="HU 100bb">
+                    </div>
+                    <div class="form-group">
+                        <label for="num-players">Players</label>
+                        <select id="num-players">
+                            <option value="2" selected>2 (Heads-Up)</option>
+                            <option value="3">3</option>
+                            <option value="4">4</option>
+                            <option value="5">5</option>
+                            <option value="6">6 (Full Ring)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="stack-size">Stack (BB)</label>
+                        <input type="number" id="stack-size" value="100" min="1">
+                    </div>
+                    <div class="form-group">
+                        <label for="bet-type">Bet Type</label>
+                        <select id="bet-type">
+                            <option value="NoLimit" selected>No Limit</option>
+                            <option value="PotLimit">Pot Limit</option>
+                        </select>
+                    </div>
+                </section>
+
+                <section class="config-section">
+                    <h2>Blinds</h2>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="sb-size">SB</label>
+                            <input type="number" id="sb-size" value="1" min="1">
+                        </div>
+                        <div class="form-group">
+                            <label for="bb-size">BB</label>
+                            <input type="number" id="bb-size" value="2" min="1">
+                        </div>
+                    </div>
+                </section>
+
+                <section class="config-section">
+                    <h2>Preflop Sizes</h2>
+                    <div class="form-group">
+                        <label for="preflop-open-bet">Open Bet</label>
+                        <input type="text" id="preflop-open-bet" value="50%, 75%" placeholder="33%, 50%">
+                    </div>
+                    <div class="form-group">
+                        <label for="preflop-open-raise">Open Raise</label>
+                        <input type="text" id="preflop-open-raise" value="2.5x, 3x, a" placeholder="2.5x, 3x, a">
+                    </div>
+                    <div class="form-group">
+                        <label for="preflop-3bet-raise">3-Bet Raise</label>
+                        <input type="text" id="preflop-3bet-raise" value="2.5x, 3x, a" placeholder="2.5x, 3x, a">
+                    </div>
+                </section>
+
+                <section class="config-section">
+                    <h2>Flop Sizes</h2>
+                    <div class="form-group">
+                        <label for="flop-bet">Bet</label>
+                        <input type="text" id="flop-bet" value="33%, 67%, 100%" placeholder="33%, 67%, 100%">
+                    </div>
+                    <div class="form-group">
+                        <label for="flop-raise">Raise</label>
+                        <input type="text" id="flop-raise" value="2.5x, a" placeholder="2.5x, a">
+                    </div>
+                </section>
+
+                <section class="config-section">
+                    <h2>Turn Sizes</h2>
+                    <div class="form-group">
+                        <label for="turn-bet">Bet</label>
+                        <input type="text" id="turn-bet" value="33%, 67%, 100%" placeholder="33%, 67%, 100%">
+                    </div>
+                    <div class="form-group">
+                        <label for="turn-raise">Raise</label>
+                        <input type="text" id="turn-raise" value="2.5x, a" placeholder="2.5x, a">
+                    </div>
+                </section>
+
+                <section class="config-section">
+                    <h2>River Sizes</h2>
+                    <div class="form-group">
+                        <label for="river-bet">Bet</label>
+                        <input type="text" id="river-bet" value="33%, 67%, 100%" placeholder="33%, 67%, 100%">
+                    </div>
+                    <div class="form-group">
+                        <label for="river-raise">Raise</label>
+                        <input type="text" id="river-raise" value="2.5x, a" placeholder="2.5x, a">
+                    </div>
+                </section>
+
+                <section class="config-section">
+                    <h2>Tree Options</h2>
+                    <div class="form-group">
+                        <label for="max-raises">Max Raises</label>
+                        <input type="number" id="max-raises" value="4" min="1" max="10">
+                    </div>
+                </section>
+
+                <div class="button-group">
+                    <button id="build-btn" class="btn btn-primary">Build Tree</button>
+                    <button id="save-btn" class="btn btn-secondary">Save Config</button>
+                    <button id="load-btn" class="btn btn-secondary">Load Config</button>
+                    <input type="file" id="load-input" accept=".json" style="display: none;">
+                </div>
+            </aside>
+
+            <!-- Center Panel: Tree Navigator -->
+            <main class="tree-panel">
+                <div class="tree-navigator">
+                    <div class="node-state" id="node-state">
+                        <div class="state-header">
+                            <span class="street-badge" id="street-badge">PREFLOP</span>
+                            <span class="pot-display">Pot: <span id="pot-value">3</span></span>
+                        </div>
+
+                        <div class="player-info" id="player-info">
+                            <span class="player-badge" id="player-badge">BTN</span>
+                            <span class="player-text">to act</span>
+                            <span class="stack-display">Stack: <span id="stack-value">99</span></span>
+                        </div>
+
+                        <div class="actions-container" id="actions-container">
+                            <h3>Available Actions</h3>
+                            <div class="action-buttons" id="action-buttons">
+                                <!-- Actions will be populated here -->
+                                <button class="action-btn action-fold">Fold</button>
+                                <button class="action-btn action-call">Call 2</button>
+                                <button class="action-btn action-raise">Raise 6</button>
+                                <button class="action-btn action-allin">All-in 100</button>
+                            </div>
+                        </div>
+
+                        <div class="terminal-result" id="terminal-result" style="display: none;">
+                            <span class="terminal-badge">TERMINAL</span>
+                            <span class="terminal-text" id="terminal-text">Showdown</span>
+                        </div>
+                    </div>
+
+                    <div class="history-panel">
+                        <h3>Action History</h3>
+                        <div class="history-list" id="history-list">
+                            <!-- History items will be populated here -->
+                        </div>
+                    </div>
+
+                    <div class="navigation-controls">
+                        <button id="back-btn" class="btn btn-nav" disabled>Back</button>
+                        <button id="reset-btn" class="btn btn-nav">Reset</button>
+                    </div>
+
+                    <div class="breadcrumb" id="breadcrumb">
+                        <span class="crumb active">Root</span>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Right Panel: Stats -->
+            <aside class="stats-panel">
+                <section class="stats-section">
+                    <h2>Tree Statistics</h2>
+                    <div class="stat-row">
+                        <span class="stat-label">Total Nodes</span>
+                        <span class="stat-value" id="stat-nodes">-</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Terminal Nodes</span>
+                        <span class="stat-value" id="stat-terminals">-</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Player Nodes</span>
+                        <span class="stat-value" id="stat-player-nodes">-</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Max Depth</span>
+                        <span class="stat-value" id="stat-depth">-</span>
+                    </div>
+                </section>
+
+                <section class="stats-section">
+                    <h2>Memory Estimate</h2>
+                    <div class="stat-row">
+                        <span class="stat-label">Info Sets</span>
+                        <span class="stat-value" id="stat-infosets">-</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Compressed</span>
+                        <span class="stat-value" id="stat-memory-compressed">-</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Uncompressed</span>
+                        <span class="stat-value" id="stat-memory-uncompressed">-</span>
+                    </div>
+                </section>
+
+                <section class="stats-section">
+                    <h2>Current Position</h2>
+                    <div class="stat-row">
+                        <span class="stat-label">Path Depth</span>
+                        <span class="stat-value" id="stat-path-depth">0</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Effective Stack</span>
+                        <span class="stat-value" id="stat-effective-stack">-</span>
+                    </div>
+                </section>
+
+                <section class="stats-section">
+                    <h2>Bet Size Preview</h2>
+                    <div class="form-group">
+                        <label for="preview-size">Size String</label>
+                        <input type="text" id="preview-size" placeholder="50%, 2.5x, e">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="preview-pot">Pot</label>
+                            <input type="number" id="preview-pot" value="100">
+                        </div>
+                        <div class="form-group">
+                            <label for="preview-stack">Stack</label>
+                            <input type="number" id="preview-stack" value="500">
+                        </div>
+                    </div>
+                    <div class="preview-result" id="preview-result">
+                        Enter a bet size to preview
+                    </div>
+                </section>
+            </aside>
+        </div>
+
+        <div class="status-bar" id="status-bar">
+            Ready - Load WASM module to begin
+        </div>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>

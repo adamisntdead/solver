@@ -1,0 +1,559 @@
+/* === CSS Variables === */
+:root {
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #16213e;
+    --bg-tertiary: #0f3460;
+    --text-primary: #eaeaea;
+    --text-secondary: #a0a0a0;
+    --accent-primary: #e94560;
+    --accent-secondary: #0f3460;
+    --border-color: #2d3a4f;
+    --success: #4caf50;
+    --warning: #ff9800;
+    --error: #f44336;
+
+    --action-fold: #6b7280;
+    --action-check: #3b82f6;
+    --action-call: #3b82f6;
+    --action-bet: #22c55e;
+    --action-raise: #22c55e;
+    --action-allin: #f59e0b;
+
+    --font-mono: 'SF Mono', 'Monaco', 'Consolas', monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+
+    --panel-padding: 16px;
+    --border-radius: 8px;
+    --shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+}
+
+/* === Reset & Base === */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: var(--font-sans);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    overflow: hidden;
+}
+
+/* === Layout === */
+.app-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+.app-header {
+    background: var(--bg-secondary);
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.app-header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.main-content {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+/* === Panels === */
+.config-panel,
+.stats-panel {
+    width: 280px;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border-color);
+    overflow-y: auto;
+    padding: var(--panel-padding);
+}
+
+.stats-panel {
+    border-right: none;
+    border-left: 1px solid var(--border-color);
+}
+
+.tree-panel {
+    flex: 1;
+    background: var(--bg-primary);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* === Config Sections === */
+.config-section,
+.stats-section {
+    margin-bottom: 20px;
+}
+
+.config-section h2,
+.stats-section h2 {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+    letter-spacing: 0.5px;
+}
+
+/* === Form Elements === */
+.form-group {
+    margin-bottom: 12px;
+}
+
+.form-group label {
+    display: block;
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+
+.form-group input,
+.form-group select {
+    width: 100%;
+    padding: 8px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: var(--font-mono);
+}
+
+.form-group input:focus,
+.form-group select:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
+.form-row {
+    display: flex;
+    gap: 10px;
+}
+
+.form-row .form-group {
+    flex: 1;
+}
+
+/* === Buttons === */
+.btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.btn-primary {
+    background: var(--accent-primary);
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #d13555;
+}
+
+.btn-secondary {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+}
+
+.btn-secondary:hover {
+    background: var(--border-color);
+}
+
+.btn-nav {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+}
+
+.btn-nav:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.button-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+/* === Tree Navigator === */
+.tree-navigator {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: var(--panel-padding);
+}
+
+.node-state {
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius);
+    padding: 20px;
+    margin-bottom: 16px;
+}
+
+.state-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.street-badge {
+    background: var(--bg-tertiary);
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.street-badge.preflop { background: #3b82f6; }
+.street-badge.flop { background: #22c55e; }
+.street-badge.turn { background: #f59e0b; }
+.street-badge.river { background: #ef4444; }
+
+.pot-display {
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.pot-display span {
+    color: var(--success);
+    font-weight: 600;
+    font-family: var(--font-mono);
+}
+
+.player-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.player-badge {
+    background: var(--accent-primary);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.player-text {
+    color: var(--text-secondary);
+}
+
+.stack-display {
+    margin-left: auto;
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.stack-display span {
+    color: var(--text-primary);
+    font-weight: 500;
+    font-family: var(--font-mono);
+}
+
+/* === Action Buttons === */
+.actions-container h3 {
+    font-size: 12px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+}
+
+.action-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.action-btn {
+    padding: 10px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: var(--font-mono);
+}
+
+.action-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow);
+}
+
+.action-fold {
+    background: var(--action-fold);
+    color: white;
+}
+
+.action-check {
+    background: var(--action-check);
+    color: white;
+}
+
+.action-call {
+    background: var(--action-call);
+    color: white;
+}
+
+.action-bet {
+    background: var(--action-bet);
+    color: white;
+}
+
+.action-raise {
+    background: var(--action-raise);
+    color: white;
+}
+
+.action-allin {
+    background: var(--action-allin);
+    color: white;
+}
+
+/* === Terminal Result === */
+.terminal-result {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px;
+    background: var(--bg-tertiary);
+    border-radius: 6px;
+}
+
+.terminal-badge {
+    background: var(--accent-primary);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.terminal-text {
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+/* === History Panel === */
+.history-panel {
+    flex: 1;
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius);
+    padding: 16px;
+    margin-bottom: 16px;
+    overflow-y: auto;
+}
+
+.history-panel h3 {
+    font-size: 12px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+}
+
+.history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.history-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.history-item:hover {
+    background: var(--border-color);
+}
+
+.history-player {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent-primary);
+    min-width: 36px;
+}
+
+.history-action {
+    font-size: 13px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+}
+
+/* === Navigation Controls === */
+.navigation-controls {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.navigation-controls .btn {
+    flex: 1;
+}
+
+/* === Breadcrumb === */
+.breadcrumb {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    padding: 12px;
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius);
+    font-size: 12px;
+}
+
+.crumb {
+    padding: 4px 8px;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.crumb:hover {
+    background: var(--border-color);
+}
+
+.crumb.active {
+    background: var(--accent-primary);
+}
+
+.crumb-separator {
+    color: var(--text-secondary);
+    margin: 0 2px;
+}
+
+/* === Stats === */
+.stat-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.stat-row:last-child {
+    border-bottom: none;
+}
+
+.stat-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.stat-value {
+    font-size: 13px;
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+/* === Preview Result === */
+.preview-result {
+    padding: 12px;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+}
+
+.preview-result.valid {
+    color: var(--success);
+}
+
+.preview-result.invalid {
+    color: var(--error);
+}
+
+/* === Status Bar === */
+.status-bar {
+    padding: 8px 20px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-color);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.status-bar.error {
+    color: var(--error);
+}
+
+.status-bar.success {
+    color: var(--success);
+}
+
+/* === Scrollbar === */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--text-secondary);
+}
+
+/* === Loading State === */
+.loading {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+/* === Responsive === */
+@media (max-width: 1200px) {
+    .config-panel,
+    .stats-panel {
+        width: 240px;
+    }
+}
+
+@media (max-width: 900px) {
+    .main-content {
+        flex-direction: column;
+    }
+
+    .config-panel,
+    .stats-panel {
+        width: 100%;
+        max-height: 300px;
+    }
+
+    .tree-panel {
+        flex: 1;
+    }
+}

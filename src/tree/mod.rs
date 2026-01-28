@@ -17,7 +17,7 @@ pub mod position;
 
 pub use action::{Action, BettingState, TerminalResult};
 pub use bet_size::{BetSize, BetSizeOptions};
-pub use builder::{ActionTree, ActionTreeNode};
+pub use builder::{ActionTree, ActionTreeNode, TreeStats};
 pub use config::{BetType, PreflopConfig, Street, StreetConfig, TreeConfig};
 pub use memory::MemoryEstimate;
 pub use position::Position;

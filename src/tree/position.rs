@@ -21,6 +21,7 @@ use crate::tree::Street;
 
 /// Standard poker positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Position {
     /// Under the gun (first preflop in 6-max)
     UTG,

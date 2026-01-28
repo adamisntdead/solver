@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "crates/solver-wasm"]
+
 [package]
 name = "solver"
 version = "0.1.0"
@@ -7,6 +10,13 @@ license = "MIT"
 keywords = ["cfr", "game-theory", "nash-equilibrium", "solver"]
 categories = ["algorithms", "game-development", "mathematics"]
 
+[features]
+default = ["rand", "rayon"]
+serde = ["dep:serde"]
+rand = ["dep:rand"]
+rayon = ["dep:rayon"]
+
 [dependencies]
-rand = { version = "0.8", features = ["small_rng"] }
-rayon = "1.10"
+rand = { version = "0.8", features = ["small_rng"], optional = true }
+rayon = { version = "1.10", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }

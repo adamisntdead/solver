@@ -1,0 +1,21 @@
+[package]
+name = "solver-wasm"
+version = "0.1.0"
+edition = "2024"
+description = "WASM bindings for the poker tree builder"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+solver = { path = "../..", features = ["serde"], default-features = false }
+wasm-bindgen = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde-wasm-bindgen = "0.6"
+console_error_panic_hook = "0.1"
+getrandom = { version = "0.2", features = ["js"] }
+
+[profile.release]
+opt-level = "s"
+lto = true

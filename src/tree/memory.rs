@@ -7,6 +7,7 @@ use crate::tree::builder::ActionTree;
 
 /// Memory usage estimate for a tree.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MemoryEstimate {
     /// Memory for uncompressed regrets/strategies (32-bit floats).
     pub uncompressed_bytes: u64,

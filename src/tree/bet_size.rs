@@ -12,6 +12,7 @@ use std::str::FromStr;
 
 /// A bet size specification.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BetSize {
     /// Percentage of pot: "50%", "100%", "150%"
     PotRelative(f64),
@@ -242,6 +243,7 @@ fn parse_positive_float(s: &str) -> Option<f64> {
 
 /// Bet size options for different action types.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BetSizeOptions {
     /// Sizes for initial bets (when facing check)
     pub bet: Vec<BetSize>,

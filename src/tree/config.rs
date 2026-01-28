@@ -4,6 +4,7 @@ use crate::tree::bet_size::BetSizeOptions;
 
 /// Betting structure type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BetType {
     /// No limit - can bet any amount up to stack
     #[default]
@@ -14,6 +15,7 @@ pub enum BetType {
 
 /// Street (betting round) in poker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Street {
     #[default]
     Preflop,
@@ -56,6 +58,7 @@ impl Street {
 
 /// Configuration for a single street's bet sizes.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StreetConfig {
     /// Bet sizes per position (indexed by seat, 0 = first to act postflop).
     /// If fewer entries than players, the last entry is used for remaining positions.
@@ -100,6 +103,7 @@ static DEFAULT_BET_SIZES: BetSizeOptions = BetSizeOptions {
 
 /// Configuration for preflop betting.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PreflopConfig {
     /// Blind amounts [SB, BB] in chips.
     pub blinds: [i32; 2],
@@ -221,6 +225,7 @@ impl PreflopConfig {
 
 /// Complete tree configuration.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TreeConfig {
     // === Game Setup ===
     /// Number of players (2-6).

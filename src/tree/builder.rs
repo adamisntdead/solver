@@ -153,6 +153,7 @@ impl ActionTree {
 
 /// Tree statistics.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TreeStats {
     pub node_count: usize,
     pub terminal_count: usize,

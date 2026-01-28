@@ -5,6 +5,7 @@ use crate::tree::position::{all_active_mask, blind_seats, count_active, next_act
 
 /// A poker action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Action {
     /// Fold hand
     Fold,
@@ -49,6 +50,7 @@ impl Action {
 
 /// Result of a terminal node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TerminalResult {
     /// Someone folded, winner is the specified player.
     Fold { winner: usize },
