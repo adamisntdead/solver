@@ -33,6 +33,7 @@ pub mod hands;
 pub mod isomorphism;
 pub mod matchups;
 pub mod postflop_game;
+pub mod postflop_solver;
 pub mod range_parser;
 
 pub use board_parser::*;
@@ -40,6 +41,7 @@ pub use hands::{Board, Card, Combo, Range, NUM_COMBOS};
 pub use isomorphism::{RiverIsomorphism, SuitMapping};
 pub use matchups::MatchupTable;
 pub use postflop_game::{PostflopConfig, PostflopGame, PostflopNode};
+pub use postflop_solver::PostflopSolver;
 pub use range_parser::*;
 
 // Re-export tree types for convenience
