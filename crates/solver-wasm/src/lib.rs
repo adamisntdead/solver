@@ -1,14 +1,30 @@
-//! WASM bindings for the poker tree builder.
+//! WASM bindings for the poker tree builder and solver.
 
 mod tree_view;
 
+use std::cell::RefCell;
+
 use serde::{Deserialize, Serialize};
+use solver::poker::hands::{combo_to_string, Combo};
+use solver::poker::{parse_board, parse_range, PostflopGame, PostflopSolver};
 use solver::tree::bet_size::parse_bet_size;
 use solver::{
-    ActionTree, BetSizeOptions, BetType, MemoryEstimate, PreflopConfig,
-    Street, StreetConfig, TreeConfig, TreeStats,
+    ActionTree, BetSizeOptions, BetType, IndexedActionTree, MemoryEstimate, PreflopConfig, Street,
+    StreetConfig, TreeConfig, TreeStats,
 };
 use wasm_bindgen::prelude::*;
+
+// === Solver State ===
+
+struct SolverState {
+    game: PostflopGame,
+    solver: PostflopSolver,
+    pot: i32,
+}
+
+thread_local! {
+    static SOLVER_STATE: RefCell<Option<SolverState>> = RefCell::new(None);
+}
 
 /// Initialize panic hook for better error messages in browser console.
 #[wasm_bindgen(start)]
@@ -413,6 +429,388 @@ pub fn get_default_config() -> String {
         add_all_in_threshold: 1.5,
     };
     serde_json::to_string_pretty(&config).unwrap()
+}
+
+// === Solver WASM Functions ===
+
+/// JSON config for creating a solver.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SolverConfig {
+    /// Board string (e.g., "KhQsJs2c3d" for river, "KhQsJs2c" for turn)
+    pub board: String,
+    /// OOP range string (e.g., "AA,KK,QQ,AKs")
+    pub oop_range: String,
+    /// IP range string (e.g., "AA,KK,AKs,AQs")
+    pub ip_range: String,
+    /// Starting pot size
+    pub pot: i32,
+    /// Effective stack size
+    pub effective_stack: i32,
+    /// Tree configuration (reuses SpotConfig)
+    pub tree_config: SpotConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateSolverResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub num_ip_hands: Option<usize>,
+    pub num_oop_hands: Option<usize>,
+}
+
+/// Create a solver from JSON config.
+///
+/// Config includes board, ranges, pot, stack, and tree configuration.
+#[wasm_bindgen]
+pub fn create_solver(config_json: &str) -> JsValue {
+    let result = create_solver_internal(config_json);
+    serde_wasm_bindgen::to_value(&result).unwrap()
+}
+
+fn create_solver_internal(config_json: &str) -> CreateSolverResult {
+    let solver_config: SolverConfig = match serde_json::from_str(config_json) {
+        Ok(c) => c,
+        Err(e) => {
+            return CreateSolverResult {
+                success: false,
+                error: Some(format!("Failed to parse config: {}", e)),
+                num_ip_hands: None,
+                num_oop_hands: None,
+            }
+        }
+    };
+
+    // Build tree from tree_config
+    let tree_config = match convert_config(&solver_config.tree_config) {
+        Ok(c) => c,
+        Err(e) => {
+            return CreateSolverResult {
+                success: false,
+                error: Some(format!("Invalid tree config: {}", e)),
+                num_ip_hands: None,
+                num_oop_hands: None,
+            }
+        }
+    };
+
+    let tree = match ActionTree::new(tree_config) {
+        Ok(t) => t,
+        Err(e) => {
+            return CreateSolverResult {
+                success: false,
+                error: Some(format!("Failed to build tree: {}", e)),
+                num_ip_hands: None,
+                num_oop_hands: None,
+            }
+        }
+    };
+
+    let indexed_tree = tree.to_indexed();
+
+    // Parse board
+    let board = match parse_board(&solver_config.board) {
+        Ok(b) => b,
+        Err(e) => {
+            return CreateSolverResult {
+                success: false,
+                error: Some(format!("Invalid board: {}", e)),
+                num_ip_hands: None,
+                num_oop_hands: None,
+            }
+        }
+    };
+
+    // Parse ranges
+    let oop_range = match parse_range(&solver_config.oop_range) {
+        Ok(r) => r,
+        Err(e) => {
+            return CreateSolverResult {
+                success: false,
+                error: Some(format!("Invalid OOP range: {}", e)),
+                num_ip_hands: None,
+                num_oop_hands: None,
+            }
+        }
+    };
+
+    let ip_range = match parse_range(&solver_config.ip_range) {
+        Ok(r) => r,
+        Err(e) => {
+            return CreateSolverResult {
+                success: false,
+                error: Some(format!("Invalid IP range: {}", e)),
+                num_ip_hands: None,
+                num_oop_hands: None,
+            }
+        }
+    };
+
+    // Create game and solver
+    let pot = solver_config.pot;
+    let game = PostflopGame::new(
+        indexed_tree,
+        board,
+        oop_range,
+        ip_range,
+        pot,
+        solver_config.effective_stack,
+    );
+
+    let solver = PostflopSolver::new(&game);
+    let num_ip = solver.num_hands(0);
+    let num_oop = solver.num_hands(1);
+
+    SOLVER_STATE.with(|state| {
+        *state.borrow_mut() = Some(SolverState { game, solver, pot });
+    });
+
+    CreateSolverResult {
+        success: true,
+        error: None,
+        num_ip_hands: Some(num_ip),
+        num_oop_hands: Some(num_oop),
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunIterationsResult {
+    pub total_iterations: u32,
+    pub exploitability: f32,
+    pub exploitability_pct: f32,
+}
+
+/// Run solver iterations.
+///
+/// Returns total iteration count and current exploitability.
+#[wasm_bindgen]
+pub fn run_iterations(count: u32) -> JsValue {
+    let result = SOLVER_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        let state = match state.as_mut() {
+            Some(s) => s,
+            None => {
+                return RunIterationsResult {
+                    total_iterations: 0,
+                    exploitability: 0.0,
+                    exploitability_pct: 0.0,
+                }
+            }
+        };
+
+        state.solver.train(&state.game, count);
+
+        let exploit = state.solver.exploitability(&state.game);
+        let pot = state.pot as f32;
+        let exploit_pct = if pot > 0.0 {
+            exploit / pot * 100.0
+        } else {
+            0.0
+        };
+
+        RunIterationsResult {
+            total_iterations: state.solver.total_iterations(),
+            exploitability: exploit,
+            exploitability_pct: exploit_pct,
+        }
+    });
+
+    serde_wasm_bindgen::to_value(&result).unwrap()
+}
+
+/// Get current exploitability.
+#[wasm_bindgen]
+pub fn get_exploitability() -> f32 {
+    SOLVER_STATE.with(|state| {
+        let state = state.borrow();
+        match state.as_ref() {
+            Some(s) => s.solver.exploitability(&s.game),
+            None => 0.0,
+        }
+    })
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NodeStrategyResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub action_names: Vec<String>,
+    pub hands: Vec<HandStrategy>,
+    pub aggregate: Vec<f32>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HandStrategy {
+    pub combo: String,
+    pub weight: f32,
+    pub actions: Vec<f32>,
+}
+
+/// Get the strategy for a specific node after solving.
+///
+/// `path` is a dot-separated string of action indices (e.g., "0.1.2").
+/// `player` is the acting player at this node (0=IP, 1=OOP).
+#[wasm_bindgen]
+pub fn get_node_strategy(path: &str, player: usize) -> JsValue {
+    let result = SOLVER_STATE.with(|state| {
+        let state = state.borrow();
+        let state = match state.as_ref() {
+            Some(s) => s,
+            None => {
+                return NodeStrategyResult {
+                    success: false,
+                    error: Some("No solver active".to_string()),
+                    action_names: vec![],
+                    hands: vec![],
+                    aggregate: vec![],
+                }
+            }
+        };
+
+        get_node_strategy_internal(state, path, player)
+    });
+
+    serde_wasm_bindgen::to_value(&result).unwrap()
+}
+
+fn get_node_strategy_internal(
+    state: &SolverState,
+    path: &str,
+    player: usize,
+) -> NodeStrategyResult {
+    let tree = &state.game.tree;
+
+    // Navigate to the node
+    let node_idx = match navigate_indexed_tree(tree, path) {
+        Ok(idx) => idx,
+        Err(e) => {
+            return NodeStrategyResult {
+                success: false,
+                error: Some(e),
+                action_names: vec![],
+                hands: vec![],
+                aggregate: vec![],
+            }
+        }
+    };
+
+    let node = tree.get(node_idx);
+
+    // Get action names
+    let action_names: Vec<String> = node.actions.iter().map(|a| a.display()).collect();
+    let num_actions = action_names.len();
+
+    if num_actions == 0 {
+        return NodeStrategyResult {
+            success: true,
+            error: None,
+            action_names: vec![],
+            hands: vec![],
+            aggregate: vec![],
+        };
+    }
+
+    // Get per-hand strategies
+    let num_hands = state.solver.num_hands(player);
+    let num_contexts = state.solver.num_contexts(node_idx);
+
+    let mut hands = Vec::with_capacity(num_hands);
+    let mut aggregate = vec![0.0f32; num_actions];
+    let mut total_weight = 0.0f32;
+
+    for h in 0..num_hands {
+        let (combo_idx, weight) = state.solver.hand_info(player, h);
+        let combo = Combo::from_index(combo_idx);
+        let combo_str = combo_to_string(combo);
+
+        // Average strategy across card contexts
+        let mut actions = vec![0.0f32; num_actions];
+        for ctx in 0..num_contexts {
+            let ctx_strategy = state.solver.get_hand_strategy_ctx(node_idx, h, player, ctx);
+            for (a, &prob) in ctx_strategy.iter().enumerate() {
+                actions[a] += prob;
+            }
+        }
+        // Normalize by number of contexts
+        if num_contexts > 1 {
+            let inv = 1.0 / num_contexts as f32;
+            for a in &mut actions {
+                *a *= inv;
+            }
+        }
+
+        // Accumulate weighted aggregate
+        for (a, &prob) in actions.iter().enumerate() {
+            aggregate[a] += weight * prob;
+        }
+        total_weight += weight;
+
+        hands.push(HandStrategy {
+            combo: combo_str,
+            weight,
+            actions,
+        });
+    }
+
+    // Normalize aggregate
+    if total_weight > 0.0 {
+        for a in &mut aggregate {
+            *a /= total_weight;
+        }
+    }
+
+    NodeStrategyResult {
+        success: true,
+        error: None,
+        action_names,
+        hands,
+        aggregate,
+    }
+}
+
+/// Navigate an IndexedActionTree using a dot-separated action path.
+/// Automatically skips chance nodes.
+fn navigate_indexed_tree(tree: &IndexedActionTree, path: &str) -> Result<usize, String> {
+    let mut node_idx = tree.root_idx;
+
+    // Skip initial chance node
+    while tree.get(node_idx).is_chance() {
+        if tree.get(node_idx).children.is_empty() {
+            return Err("Chance node has no children".to_string());
+        }
+        node_idx = tree.get(node_idx).children[0];
+    }
+
+    if path.is_empty() {
+        return Ok(node_idx);
+    }
+
+    let indices: Vec<usize> = path
+        .split('.')
+        .map(|s| s.parse::<usize>())
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("Invalid path: {}", e))?;
+
+    for &action_idx in &indices {
+        let node = tree.get(node_idx);
+        if action_idx >= node.children.len() {
+            return Err(format!(
+                "Invalid action index {} (node has {} actions)",
+                action_idx,
+                node.actions.len()
+            ));
+        }
+        node_idx = node.children[action_idx];
+
+        // Skip chance nodes
+        while tree.get(node_idx).is_chance() {
+            if tree.get(node_idx).children.is_empty() {
+                break;
+            }
+            node_idx = tree.get(node_idx).children[0];
+        }
+    }
+
+    Ok(node_idx)
 }
 
 // === Internal conversion functions ===

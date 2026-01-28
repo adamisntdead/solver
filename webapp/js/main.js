@@ -8,7 +8,11 @@ import init, {
     get_action_result,
     get_default_config,
     get_tree_root,
-    get_tree_children
+    get_tree_children,
+    create_solver,
+    run_iterations,
+    get_node_strategy,
+    get_exploitability
 } from '../pkg/solver_wasm.js';
 
 import * as TreeView from './tree-view.js';
@@ -19,6 +23,12 @@ let currentConfig = null;
 let currentPath = '';
 let treeBuilt = false;
 let currentNodeState = null;
+
+// Solver state
+let solverActive = false;
+let solverRunning = false;
+let solverStopped = false;
+let solverTotalIterations = 0;
 
 // === DOM Elements ===
 const el = {
@@ -83,7 +93,26 @@ const el = {
     statMemory: document.getElementById('stat-memory'),
 
     // Status
-    statusBar: document.getElementById('status-bar')
+    statusBar: document.getElementById('status-bar'),
+
+    // Solver
+    solverBoard: document.getElementById('solver-board'),
+    solverOopRange: document.getElementById('solver-oop-range'),
+    solverIpRange: document.getElementById('solver-ip-range'),
+    solverIterations: document.getElementById('solver-iterations'),
+    solveBtn: document.getElementById('solve-btn'),
+    stopSolveBtn: document.getElementById('stop-solve-btn'),
+    solverProgress: document.getElementById('solver-progress'),
+    progressFill: document.getElementById('progress-fill'),
+    solverIterCount: document.getElementById('solver-iter-count'),
+    solverExploit: document.getElementById('solver-exploit'),
+
+    // Strategy
+    strategySection: document.getElementById('strategy-section'),
+    strategyAggregate: document.getElementById('strategy-aggregate'),
+    strategyLegend: document.getElementById('strategy-legend'),
+    strategyThead: document.getElementById('strategy-thead'),
+    strategyTbody: document.getElementById('strategy-tbody')
 };
 
 // === Initialize ===
@@ -150,6 +179,10 @@ function setupEventListeners() {
     el.addCustomBtn.addEventListener('click', handleAddCustom);
     el.applyTemplateBtn.addEventListener('click', handleApplyTemplate);
     el.pruneSubtreeBtn.addEventListener('click', handlePruneSubtree);
+
+    // Solver
+    el.solveBtn.addEventListener('click', startSolve);
+    el.stopSolveBtn.addEventListener('click', stopSolve);
 
     // Keyboard shortcuts
     document.addEventListener('keydown', handleGlobalKeyDown);
@@ -286,6 +319,9 @@ async function buildTree() {
 
         treeBuilt = true;
         currentPath = '';
+        solverActive = false;
+        el.strategySection.style.display = 'none';
+        el.solveBtn.disabled = false;
 
         // Load tree view
         await loadTreeView();
@@ -525,6 +561,7 @@ function updateNodeInspector(state) {
         el.terminalText.textContent = state.terminal_result || 'Terminal';
         el.childrenSection.style.display = 'none';
         el.paletteSection.style.display = 'none';
+        el.strategySection.style.display = 'none';
     } else {
         // Player node
         el.nodeDetails.style.display = 'block';
@@ -539,6 +576,13 @@ function updateNodeInspector(state) {
 
         // Update enabled actions (children)
         updateEnabledActions(state.actions || []);
+
+        // Show strategy if solver is active
+        if (solverActive && state.player_to_act !== undefined) {
+            displayNodeStrategy(currentPath, state.player_to_act);
+        } else {
+            el.strategySection.style.display = 'none';
+        }
     }
 }
 
@@ -735,6 +779,222 @@ function formatBytes(bytes) {
 function setStatus(message, type = '') {
     el.statusBar.textContent = message;
     el.statusBar.className = `status-bar ${type}`;
+}
+
+// === Solver ===
+const ACTION_COLORS = [
+    '#6b7280', // fold - gray
+    '#3b82f6', // check/call - blue
+    '#22c55e', // bet - green
+    '#f59e0b', // raise - yellow
+    '#ef4444', // allin - red
+    '#8b5cf6', // purple
+    '#ec4899', // pink
+    '#14b8a6', // teal
+];
+
+function getActionColor(name, index) {
+    const n = name.toLowerCase();
+    if (n === 'fold') return ACTION_COLORS[0];
+    if (n === 'check' || n === 'call') return ACTION_COLORS[1];
+    if (n.startsWith('bet')) return ACTION_COLORS[2];
+    if (n.startsWith('raise')) return ACTION_COLORS[3];
+    if (n.includes('all')) return ACTION_COLORS[4];
+    return ACTION_COLORS[Math.min(index + 2, ACTION_COLORS.length - 1)];
+}
+
+async function startSolve() {
+    if (!wasmLoaded || !treeBuilt || solverRunning) return;
+
+    const board = el.solverBoard.value.trim();
+    const oopRange = el.solverOopRange.value.trim();
+    const ipRange = el.solverIpRange.value.trim();
+    const targetIterations = parseInt(el.solverIterations.value) || 200;
+
+    if (!board) {
+        setStatus('Enter a board (e.g., KhQsJs2c3d)', 'error');
+        return;
+    }
+    if (!oopRange) {
+        setStatus('Enter an OOP range', 'error');
+        return;
+    }
+    if (!ipRange) {
+        setStatus('Enter an IP range', 'error');
+        return;
+    }
+
+    // Derive pot and effective_stack from tree config
+    const config = collectConfigFromUI();
+    const pot = config.starting_pot || (config.preflop ? config.preflop.blinds[0] + config.preflop.blinds[1] : 100);
+    const effectiveStack = config.starting_stacks[0] || 100;
+
+    // Build solver config
+    const solverConfig = {
+        board,
+        oop_range: oopRange,
+        ip_range: ipRange,
+        pot,
+        effective_stack: effectiveStack,
+        tree_config: config
+    };
+
+    setStatus('Creating solver...');
+    el.solveBtn.style.display = 'none';
+    el.stopSolveBtn.style.display = 'block';
+    el.solverProgress.style.display = 'block';
+    el.progressFill.style.width = '0%';
+    el.solverIterCount.textContent = `0 / ${targetIterations}`;
+    el.solverExploit.textContent = '-';
+
+    try {
+        const createResult = create_solver(JSON.stringify(solverConfig));
+        if (!createResult.success) {
+            setStatus(`Solver error: ${createResult.error}`, 'error');
+            resetSolverUI();
+            return;
+        }
+
+        solverActive = true;
+        solverRunning = true;
+        solverStopped = false;
+        solverTotalIterations = 0;
+
+        setStatus(`Solver created: ${createResult.num_oop_hands} OOP hands, ${createResult.num_ip_hands} IP hands`);
+
+        // Run iterations in batches
+        const batchSize = 50;
+        const runBatch = () => {
+            if (solverStopped || solverTotalIterations >= targetIterations) {
+                // Done
+                solverRunning = false;
+                el.solveBtn.style.display = 'block';
+                el.stopSolveBtn.style.display = 'none';
+                el.solveBtn.textContent = 'Re-solve';
+
+                const finalExploit = get_exploitability();
+                const exploitPct = pot > 0 ? (finalExploit / pot * 100).toFixed(2) : '?';
+                setStatus(`Solve complete: ${solverTotalIterations} iterations, ${exploitPct}% pot exploitability`, 'success');
+
+                // Refresh strategy display for current node
+                if (currentNodeState && currentNodeState.node_type !== 'terminal') {
+                    displayNodeStrategy(currentPath, currentNodeState.player_to_act);
+                }
+                return;
+            }
+
+            const remaining = targetIterations - solverTotalIterations;
+            const count = Math.min(batchSize, remaining);
+
+            const result = run_iterations(count);
+            solverTotalIterations = result.total_iterations;
+
+            // Update progress
+            const pct = Math.min(100, (solverTotalIterations / targetIterations) * 100);
+            el.progressFill.style.width = `${pct}%`;
+            el.solverIterCount.textContent = `${solverTotalIterations} / ${targetIterations}`;
+            el.solverExploit.textContent = `${result.exploitability_pct.toFixed(2)}% pot`;
+
+            // Yield to UI then run next batch
+            setTimeout(runBatch, 0);
+        };
+
+        // Start first batch
+        setTimeout(runBatch, 0);
+
+    } catch (error) {
+        setStatus(`Solver error: ${error.message}`, 'error');
+        console.error('Solver error:', error);
+        resetSolverUI();
+    }
+}
+
+function stopSolve() {
+    solverStopped = true;
+}
+
+function resetSolverUI() {
+    solverRunning = false;
+    el.solveBtn.style.display = 'block';
+    el.stopSolveBtn.style.display = 'none';
+}
+
+function displayNodeStrategy(path, player) {
+    if (!solverActive) {
+        el.strategySection.style.display = 'none';
+        return;
+    }
+
+    try {
+        const result = get_node_strategy(path, player);
+        if (!result.success || result.action_names.length === 0) {
+            el.strategySection.style.display = 'none';
+            return;
+        }
+
+        el.strategySection.style.display = 'block';
+
+        const { action_names, hands, aggregate } = result;
+
+        // Build color map
+        const colors = action_names.map((name, i) => getActionColor(name, i));
+
+        // Render aggregate bar
+        el.strategyAggregate.innerHTML = '';
+        for (let i = 0; i < action_names.length; i++) {
+            const pct = (aggregate[i] * 100);
+            if (pct < 0.1) continue;
+            const seg = document.createElement('div');
+            seg.className = 'strategy-segment';
+            seg.style.width = `${pct}%`;
+            seg.style.background = colors[i];
+            seg.title = `${action_names[i]}: ${pct.toFixed(1)}%`;
+            el.strategyAggregate.appendChild(seg);
+        }
+
+        // Render legend
+        el.strategyLegend.innerHTML = '';
+        for (let i = 0; i < action_names.length; i++) {
+            const pct = (aggregate[i] * 100).toFixed(1);
+            const item = document.createElement('div');
+            item.className = 'strategy-legend-item';
+            item.innerHTML = `
+                <span class="strategy-legend-swatch" style="background:${colors[i]}"></span>
+                <span class="strategy-legend-text">${action_names[i]} ${pct}%</span>
+            `;
+            el.strategyLegend.appendChild(item);
+        }
+
+        // Render table header
+        el.strategyThead.innerHTML = '';
+        const headerRow = document.createElement('tr');
+        headerRow.innerHTML = `<th>Hand</th>` + action_names.map(n => `<th>${n}</th>`).join('');
+        el.strategyThead.appendChild(headerRow);
+
+        // Render table body (sorted by weight descending, limited to top 50)
+        el.strategyTbody.innerHTML = '';
+        const sortedHands = [...hands].sort((a, b) => b.weight - a.weight);
+        const displayHands = sortedHands.slice(0, 50);
+
+        for (const hand of displayHands) {
+            const row = document.createElement('tr');
+            let cells = `<td>${hand.combo}</td>`;
+            for (let i = 0; i < hand.actions.length; i++) {
+                const pct = (hand.actions[i] * 100).toFixed(0);
+                const barWidth = Math.min(40, hand.actions[i] * 40);
+                cells += `<td>
+                    <span class="strategy-cell-bar" style="width:${barWidth}px;background:${colors[i]}"></span>
+                    ${pct}%
+                </td>`;
+            }
+            row.innerHTML = cells;
+            el.strategyTbody.appendChild(row);
+        }
+
+    } catch (error) {
+        console.error('Strategy display error:', error);
+        el.strategySection.style.display = 'none';
+    }
 }
 
 // === Start ===

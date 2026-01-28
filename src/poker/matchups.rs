@@ -145,8 +145,17 @@ impl MatchupTable {
     }
 }
 
+/// Evaluate a hand given a 5-card board and two hole cards.
+///
+/// Returns a comparable rank (higher = better), or `u32::MAX` if blocked.
+pub fn evaluate_hand(board: &[Card], c0: Card, c1: Card) -> u32 {
+    assert!(board.len() == 5, "Board must have 5 cards");
+    let cards = [board[0], board[1], board[2], board[3], board[4], c0, c1];
+    evaluate_7cards(&cards)
+}
+
 /// Evaluate a 7-card hand and return a comparable rank (higher = better).
-fn evaluate_7cards(cards: &[Card; 7]) -> u32 {
+pub fn evaluate_7cards(cards: &[Card; 7]) -> u32 {
     // Count cards per rank and per suit
     let mut rank_counts = [0u8; 13];
     let mut suit_counts = [0u8; 4];

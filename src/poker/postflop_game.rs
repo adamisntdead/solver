@@ -23,7 +23,7 @@ use crate::game::{Game, GameNode};
 use crate::poker::hands::{Board, Combo, Range, NUM_COMBOS};
 use crate::poker::isomorphism::RiverIsomorphism;
 use crate::poker::matchups::MatchupTable;
-use crate::tree::{IndexedActionTree, IndexedNode, IndexedNodeType, TreeConfig};
+use crate::tree::{IndexedActionTree, IndexedNode, IndexedNodeType, Street, TreeConfig};
 
 /// Configuration for a postflop game.
 #[derive(Clone)]
@@ -44,10 +44,14 @@ pub struct PostflopConfig {
 pub struct PostflopGame {
     /// The flattened action tree.
     pub tree: Arc<IndexedActionTree>,
-    /// Precomputed matchup table.
-    pub matchups: Arc<MatchupTable>,
-    /// Hand isomorphism for bucket mapping.
-    pub isomorphism: Arc<RiverIsomorphism>,
+    /// The board (3-5 cards).
+    pub board: Board,
+    /// Starting street (derived from board length).
+    pub starting_street: Street,
+    /// Precomputed matchup table (only for 5-card / river boards).
+    pub matchups: Option<Arc<MatchupTable>>,
+    /// Hand isomorphism for bucket mapping (only for river boards).
+    pub isomorphism: Option<Arc<RiverIsomorphism>>,
     /// OOP player's range.
     pub oop_range: Range,
     /// IP player's range.
@@ -66,6 +70,10 @@ pub struct PostflopGame {
 
 impl PostflopGame {
     /// Create a new postflop game.
+    ///
+    /// Accepts boards with 3-5 cards:
+    /// - 5 cards (river): precomputes matchup table and isomorphism
+    /// - 3-4 cards (flop/turn): valid combos from board mask only
     pub fn new(
         tree: IndexedActionTree,
         board: Board,
@@ -74,11 +82,24 @@ impl PostflopGame {
         pot: i32,
         effective_stack: i32,
     ) -> Self {
-        let matchups = Arc::new(MatchupTable::new(&board));
-        let isomorphism = Arc::new(RiverIsomorphism::new(&board));
+        let starting_street = match board.len() {
+            3 => Street::Flop,
+            4 => Street::Turn,
+            5 => Street::River,
+            n => panic!("Board must have 3-5 cards, got {}", n),
+        };
+
         let tree = Arc::new(tree);
 
-        let num_buckets = isomorphism.num_buckets;
+        // For river boards, compute matchup table and isomorphism
+        let (matchups, isomorphism, num_buckets) = if starting_street == Street::River {
+            let m = Arc::new(MatchupTable::new(&board));
+            let iso = Arc::new(RiverIsomorphism::new(&board));
+            let nb = iso.num_buckets;
+            (Some(m), Some(iso), nb)
+        } else {
+            (None, None, NUM_COMBOS)
+        };
 
         // Precompute valid matchups with weights
         let mut valid_matchups = Vec::new();
@@ -86,24 +107,37 @@ impl PostflopGame {
 
         for oop_idx in 0..NUM_COMBOS {
             let oop_weight = oop_range.weights[oop_idx];
-            if oop_weight == 0.0 || !matchups.is_valid_combo(oop_idx) {
+            if oop_weight == 0.0 {
                 continue;
             }
+            let oop_combo = Combo::from_index(oop_idx);
+            if oop_combo.conflicts_with_mask(board.mask) {
+                continue;
+            }
+
             for ip_idx in 0..NUM_COMBOS {
                 let ip_weight = ip_range.weights[ip_idx];
-                if ip_weight == 0.0 || !matchups.is_valid_combo(ip_idx) {
+                if ip_weight == 0.0 {
                     continue;
                 }
-                if matchups.is_valid_matchup(oop_idx, ip_idx) {
-                    let weight = oop_weight * ip_weight;
-                    valid_matchups.push((oop_idx, ip_idx, weight));
-                    total_weight += weight;
+                let ip_combo = Combo::from_index(ip_idx);
+                if ip_combo.conflicts_with_mask(board.mask) {
+                    continue;
                 }
+                if oop_combo.conflicts_with(&ip_combo) {
+                    continue;
+                }
+
+                let weight = oop_weight * ip_weight;
+                valid_matchups.push((oop_idx, ip_idx, weight));
+                total_weight += weight;
             }
         }
 
         PostflopGame {
             tree,
+            board,
+            starting_street,
             matchups,
             isomorphism,
             oop_range,
@@ -127,11 +161,13 @@ impl PostflopGame {
     }
 
     /// Get the root node for a specific matchup.
+    ///
+    /// Only supported for river boards (requires matchup table).
     pub fn root_for_matchup(&self, oop_combo: usize, ip_combo: usize) -> PostflopNode {
         PostflopNode {
             tree: Arc::clone(&self.tree),
-            matchups: Arc::clone(&self.matchups),
-            isomorphism: Arc::clone(&self.isomorphism),
+            matchups: Arc::clone(self.matchups.as_ref().expect("root_for_matchup requires river board")),
+            isomorphism: Arc::clone(self.isomorphism.as_ref().expect("root_for_matchup requires river board")),
             state: NodeState::Playing {
                 node_idx: self.tree.root_idx,
                 oop_combo,
@@ -160,12 +196,16 @@ impl PostflopGame {
 impl Game for PostflopGame {
     type Node = PostflopNode;
 
+    /// Get the root node.
+    ///
+    /// Only supported for river boards (the trait-based Game interface requires
+    /// matchup tables). Use `PostflopSolver` for multi-street solving.
     fn root(&self) -> PostflopNode {
         // Root is a "dealing" chance node
         PostflopNode {
             tree: Arc::clone(&self.tree),
-            matchups: Arc::clone(&self.matchups),
-            isomorphism: Arc::clone(&self.isomorphism),
+            matchups: Arc::clone(self.matchups.as_ref().expect("Game::root requires river board")),
+            isomorphism: Arc::clone(self.isomorphism.as_ref().expect("Game::root requires river board")),
             state: NodeState::Dealing,
             pot: self.pot,
             stacks: [self.effective_stack, self.effective_stack],

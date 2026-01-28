@@ -137,6 +137,41 @@
                         <span class="stat-value" id="stat-memory">-</span>
                     </div>
                 </section>
+
+                <section class="config-section" id="solver-section">
+                    <h2>Solver</h2>
+                    <div class="form-group">
+                        <label for="solver-board">Board</label>
+                        <input type="text" id="solver-board" placeholder="e.g. KhQsJs2c3d" spellcheck="false">
+                    </div>
+                    <div class="form-group">
+                        <label for="solver-oop-range">OOP Range</label>
+                        <input type="text" id="solver-oop-range" placeholder="e.g. AA,KK,QQ,AKs" spellcheck="false">
+                    </div>
+                    <div class="form-group">
+                        <label for="solver-ip-range">IP Range</label>
+                        <input type="text" id="solver-ip-range" placeholder="e.g. AA,KK,AKs,AQs" spellcheck="false">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="solver-iterations">Iterations</label>
+                            <input type="number" id="solver-iterations" value="200" min="10" max="10000" step="50">
+                        </div>
+                    </div>
+                    <div class="solver-controls">
+                        <button id="solve-btn" class="btn btn-primary" disabled>Solve</button>
+                        <button id="stop-solve-btn" class="btn btn-secondary" style="display:none">Stop</button>
+                    </div>
+                    <div class="solver-progress" id="solver-progress" style="display:none">
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progress-fill"></div>
+                        </div>
+                        <div class="solver-stats">
+                            <span id="solver-iter-count">0 / 200</span>
+                            <span id="solver-exploit">-</span>
+                        </div>
+                    </div>
+                </section>
             </aside>
 
             <!-- Center: Tree View -->
@@ -228,6 +263,22 @@
                     <div class="quick-actions">
                         <button id="apply-template-btn" class="btn btn-secondary">Apply Template to Subtree</button>
                         <button id="prune-subtree-btn" class="btn btn-secondary">Prune Subtree</button>
+                    </div>
+                </section>
+
+                <section class="inspector-section" id="strategy-section" style="display:none">
+                    <h2>Strategy</h2>
+                    <div class="strategy-aggregate" id="strategy-aggregate">
+                        <!-- Colored bar segments rendered by JS -->
+                    </div>
+                    <div class="strategy-legend" id="strategy-legend">
+                        <!-- Action names + percentages -->
+                    </div>
+                    <div class="strategy-table-wrapper">
+                        <table class="strategy-table" id="strategy-table">
+                            <thead id="strategy-thead"></thead>
+                            <tbody id="strategy-tbody"></tbody>
+                        </table>
                     </div>
                 </section>
             </aside>
