@@ -120,17 +120,6 @@ function setupEventListeners() {
     elements.previewSize.addEventListener('input', updateBetSizePreview);
     elements.previewPot.addEventListener('input', updateBetSizePreview);
     elements.previewStack.addEventListener('input', updateBetSizePreview);
-
-    // Config change listeners for auto-rebuild
-    const configInputs = [
-        elements.numPlayers, elements.stackSize, elements.betType,
-        elements.sbSize, elements.bbSize, elements.maxRaises
-    ];
-    configInputs.forEach(input => {
-        input.addEventListener('change', () => {
-            if (treeBuilt) buildTree();
-        });
-    });
 }
 
 // === Build Tree ===
