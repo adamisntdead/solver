@@ -1,51 +1,59 @@
-// Tree View module for collapsible game tree visualization
+// Tree View module - Outline-style tree with Monker-like action labels
 
 // State
 let treeData = null;
 let expandedNodes = new Set();
 let selectedPath = '';
 let onNodeSelect = null;
-
-// DOM elements
 let treeViewEl = null;
+
+// Flat list of visible nodes for keyboard navigation
+let visibleNodes = [];
 
 /**
  * Initialize the tree view
- * @param {HTMLElement} container - The tree view container element
- * @param {Function} onSelect - Callback when a node is selected
  */
 export function initTreeView(container, onSelect) {
     treeViewEl = container;
     onNodeSelect = onSelect;
+
+    // Set up keyboard navigation
+    container.addEventListener('keydown', handleKeyDown);
 }
 
 /**
- * Set the tree data from WASM
- * @param {Object} root - The tree root node from get_tree_root()
+ * Set tree data and render
  */
 export function setTreeData(root) {
     treeData = root;
     expandedNodes.clear();
-    // Auto-expand root
-    expandedNodes.add('');
+    expandedNodes.add(''); // Root always expanded
+    selectedPath = '';
     renderTree();
 }
 
 /**
- * Clear the tree view
+ * Clear the tree
  */
 export function clearTree() {
     treeData = null;
     expandedNodes.clear();
     selectedPath = '';
+    visibleNodes = [];
     if (treeViewEl) {
         treeViewEl.innerHTML = '<div class="tree-loading">Build tree to view</div>';
     }
 }
 
 /**
- * Set the selected path and highlight it
- * @param {string} path - The path to select
+ * Get currently selected path
+ */
+export function getSelectedPath() {
+    return selectedPath;
+}
+
+/**
+ * Set selection and scroll into view
  */
 export function setSelectedPath(path) {
     selectedPath = path;
@@ -54,30 +62,7 @@ export function setSelectedPath(path) {
 }
 
 /**
- * Expand all nodes (up to a reasonable depth)
- * @param {Function} getChildren - Function to get children from WASM
- * @param {number} maxDepth - Maximum depth to expand
- */
-export async function expandAll(getChildren, maxDepth = 3) {
-    if (!treeData) return;
-
-    await expandNodeRecursive(treeData, getChildren, 0, maxDepth);
-    renderTree();
-}
-
-/**
- * Collapse all nodes except root
- */
-export function collapseAll() {
-    expandedNodes.clear();
-    expandedNodes.add(''); // Keep root expanded
-    renderTree();
-}
-
-/**
- * Toggle a node's expanded state
- * @param {string} path - The node path
- * @param {Function} getChildren - Function to get children from WASM
+ * Toggle node expansion
  */
 export async function toggleNode(path, getChildren) {
     if (expandedNodes.has(path)) {
@@ -89,9 +74,7 @@ export async function toggleNode(path, getChildren) {
 }
 
 /**
- * Expand a specific node
- * @param {string} path - The node path
- * @param {Function} getChildren - Function to get children from WASM
+ * Expand a node
  */
 export async function expandNode(path, getChildren) {
     if (!treeData) return;
@@ -99,34 +82,65 @@ export async function expandNode(path, getChildren) {
     const node = findNode(treeData, path);
     if (!node || !node.has_children) return;
 
-    // Load children if not already loaded
+    // Load children if not loaded
     if (node.children.length === 0 && node.has_children) {
         const children = await getChildren(path);
-        node.children = children;
+        node.children = children || [];
     }
 
     expandedNodes.add(path);
     renderTree();
 }
 
-// === Internal Functions ===
+/**
+ * Expand all nodes up to depth
+ */
+export async function expandAll(getChildren, maxDepth = 3) {
+    if (!treeData) return;
+    await expandRecursive(treeData, getChildren, 0, maxDepth);
+    renderTree();
+}
 
-async function expandNodeRecursive(node, getChildren, depth, maxDepth) {
-    if (depth >= maxDepth || !node.has_children) return;
+/**
+ * Collapse all except root
+ */
+export function collapseAll() {
+    expandedNodes.clear();
+    expandedNodes.add('');
+    renderTree();
+}
 
-    const path = node.path;
+/**
+ * Expand path to show a specific node
+ */
+export async function expandToPath(targetPath, getChildren) {
+    if (!treeData || !targetPath) return;
 
-    // Load children if needed
-    if (node.children.length === 0 && node.has_children) {
-        const children = await getChildren(path);
-        node.children = children;
+    const parts = targetPath.split('.');
+    let currentPath = '';
+
+    for (let i = 0; i < parts.length; i++) {
+        await expandNode(currentPath, getChildren);
+        currentPath = currentPath ? `${currentPath}.${parts[i]}` : parts[i];
     }
 
-    expandedNodes.add(path);
+    renderTree();
+}
 
-    // Recursively expand children
+// === Internal Functions ===
+
+async function expandRecursive(node, getChildren, depth, maxDepth) {
+    if (depth >= maxDepth || !node.has_children) return;
+
+    if (node.children.length === 0 && node.has_children) {
+        const children = await getChildren(node.path);
+        node.children = children || [];
+    }
+
+    expandedNodes.add(node.path);
+
     for (const child of node.children) {
-        await expandNodeRecursive(child, getChildren, depth + 1, maxDepth);
+        await expandRecursive(child, getChildren, depth + 1, maxDepth);
     }
 }
 
@@ -136,11 +150,9 @@ function findNode(root, path) {
     const parts = path.split('.');
     let current = root;
 
-    for (let i = 0; i < parts.length; i++) {
-        const idx = parseInt(parts[i]);
-        if (!current.children || idx >= current.children.length) {
-            return null;
-        }
+    for (const part of parts) {
+        const idx = parseInt(part);
+        if (!current.children || idx >= current.children.length) return null;
         current = current.children[idx];
     }
 
@@ -150,68 +162,73 @@ function findNode(root, path) {
 function renderTree() {
     if (!treeViewEl || !treeData) return;
 
+    visibleNodes = [];
     treeViewEl.innerHTML = '';
-    const rootEl = renderNode(treeData, 0);
+
+    const rootEl = renderNode(treeData, 0, null);
     treeViewEl.appendChild(rootEl);
 }
 
-function renderNode(node, depth) {
+function renderNode(node, depth, parentStreet) {
     const container = document.createElement('div');
     container.className = 'tree-node';
     container.dataset.path = node.path;
 
-    // Row
+    // Track visible nodes for keyboard nav
+    visibleNodes.push(node.path);
+
+    // Main row
     const row = document.createElement('div');
-    row.className = 'tree-node-row';
+    row.className = 'tree-row';
     if (node.path === selectedPath) {
         row.classList.add('selected');
     }
 
-    // Toggle button
-    const toggle = document.createElement('span');
-    toggle.className = 'tree-toggle';
+    // Caret for expand/collapse
+    const caret = document.createElement('span');
+    caret.className = 'tree-caret';
     if (node.has_children) {
-        toggle.classList.add('expandable');
-        toggle.textContent = expandedNodes.has(node.path) ? '▼' : '▶';
-        toggle.addEventListener('click', (e) => {
+        caret.classList.add('expandable');
+        if (expandedNodes.has(node.path)) {
+            caret.classList.add('expanded');
+        }
+        caret.innerHTML = '&#9654;'; // Right-pointing triangle
+        caret.addEventListener('click', (e) => {
             e.stopPropagation();
             window.treeViewToggle(node.path);
         });
     }
-    row.appendChild(toggle);
+    row.appendChild(caret);
 
-    // Icon
+    // Small icon for node type
     const icon = document.createElement('span');
-    icon.className = `tree-node-icon ${node.node_type}`;
-    if (node.node_type === 'player') {
-        icon.textContent = node.player_name ? node.player_name[0] : 'P';
-    } else if (node.node_type === 'terminal') {
-        icon.textContent = '●';
-    }
+    icon.className = `tree-icon ${node.node_type}`;
     row.appendChild(icon);
 
-    // Label
+    // Action label (Monker-style)
     const label = document.createElement('span');
-    label.className = 'tree-node-label';
+    label.className = 'tree-label';
     if (node.action_type) {
         label.classList.add(`action-${node.action_type}`);
     }
-    label.textContent = node.label;
+    label.textContent = formatActionLabel(node);
     row.appendChild(label);
 
-    // Street badge (only show on street changes or terminals)
-    if (node.street && (depth === 0 || node.node_type === 'terminal')) {
-        const street = document.createElement('span');
-        street.className = `tree-node-street ${node.street.toLowerCase()}`;
-        street.textContent = node.street;
-        row.appendChild(street);
+    // Street badge (only on transitions)
+    const nodeStreet = node.street?.toLowerCase();
+    if (nodeStreet && nodeStreet !== parentStreet && depth > 0) {
+        const streetBadge = document.createElement('span');
+        streetBadge.className = `tree-street ${nodeStreet}`;
+        streetBadge.textContent = node.street;
+        row.appendChild(streetBadge);
     }
 
-    // Node count
+    // Node count (muted)
     if (node.subtree_size > 1) {
         const count = document.createElement('span');
-        count.className = 'tree-node-count';
-        count.textContent = `(${formatCount(node.subtree_size)})`;
+        count.className = 'tree-count';
+        count.textContent = formatCount(node.subtree_size);
+        count.title = `${node.subtree_size} nodes in subtree`;
         row.appendChild(count);
     }
 
@@ -233,7 +250,7 @@ function renderNode(node, depth) {
         }
 
         for (const child of node.children) {
-            childrenContainer.appendChild(renderNode(child, depth + 1));
+            childrenContainer.appendChild(renderNode(child, depth + 1, nodeStreet));
         }
 
         container.appendChild(childrenContainer);
@@ -242,19 +259,74 @@ function renderNode(node, depth) {
     return container;
 }
 
+/**
+ * Format action label in Monker style
+ */
+function formatActionLabel(node) {
+    // Root node
+    if (node.path === '') {
+        const players = getPlayerCount(node);
+        return `${players}-WAY, ${node.street || 'PREFLOP'}`;
+    }
+
+    // Terminal nodes
+    if (node.node_type === 'terminal') {
+        return node.terminal_result || 'Terminal';
+    }
+
+    // Action labels
+    const label = node.label || '';
+
+    // Normalize action labels to Monker style
+    if (label.toLowerCase().includes('fold')) return 'FOLD';
+    if (label.toLowerCase().includes('check')) return 'CHECK';
+    if (label.toLowerCase().includes('call')) {
+        const match = label.match(/\d+/);
+        return match ? `CALL ${match[0]}` : 'CALL';
+    }
+    if (label.toLowerCase().includes('all-in') || label.toLowerCase().includes('allin')) {
+        const match = label.match(/\d+/);
+        return match ? `ALL-IN ${match[0]}` : 'ALL-IN';
+    }
+    if (label.toLowerCase().includes('raise')) {
+        const match = label.match(/\d+/);
+        return match ? `RAISE ${match[0]}` : 'RAISE';
+    }
+    if (label.toLowerCase().includes('bet')) {
+        const match = label.match(/\d+/);
+        return match ? `BET ${match[0]}` : 'BET';
+    }
+
+    // Default: uppercase the label
+    return label.toUpperCase();
+}
+
+function getPlayerCount(node) {
+    // Try to infer from label or default to 2
+    const label = node.label || '';
+    const match = label.match(/(\d+)-way/i);
+    return match ? match[1] : '2';
+}
+
+function formatCount(n) {
+    if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+    return n.toString();
+}
+
 function updateSelection() {
     if (!treeViewEl) return;
 
     // Remove old selection
-    const oldSelected = treeViewEl.querySelector('.tree-node-row.selected');
+    const oldSelected = treeViewEl.querySelector('.tree-row.selected');
     if (oldSelected) {
         oldSelected.classList.remove('selected');
     }
 
     // Add new selection
-    const node = treeViewEl.querySelector(`[data-path="${selectedPath}"]`);
-    if (node) {
-        const row = node.querySelector('.tree-node-row');
+    const nodeEl = treeViewEl.querySelector(`[data-path="${selectedPath}"]`);
+    if (nodeEl) {
+        const row = nodeEl.querySelector('.tree-row');
         if (row) {
             row.classList.add('selected');
         }
@@ -264,43 +336,83 @@ function updateSelection() {
 function scrollToSelected() {
     if (!treeViewEl) return;
 
-    const node = treeViewEl.querySelector(`[data-path="${selectedPath}"]`);
-    if (node) {
-        node.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const nodeEl = treeViewEl.querySelector(`[data-path="${selectedPath}"]`);
+    if (nodeEl) {
+        nodeEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 }
 
-function formatCount(n) {
-    if (n >= 1000000) {
-        return (n / 1000000).toFixed(1) + 'M';
-    } else if (n >= 1000) {
-        return (n / 1000).toFixed(1) + 'K';
+// === Keyboard Navigation ===
+
+function handleKeyDown(e) {
+    if (!treeData || visibleNodes.length === 0) return;
+
+    const currentIdx = visibleNodes.indexOf(selectedPath);
+
+    switch (e.key) {
+        case 'ArrowUp':
+            e.preventDefault();
+            if (currentIdx > 0) {
+                selectNodeByIndex(currentIdx - 1);
+            }
+            break;
+
+        case 'ArrowDown':
+            e.preventDefault();
+            if (currentIdx < visibleNodes.length - 1) {
+                selectNodeByIndex(currentIdx + 1);
+            }
+            break;
+
+        case 'ArrowLeft':
+            e.preventDefault();
+            if (expandedNodes.has(selectedPath)) {
+                // Collapse current node
+                expandedNodes.delete(selectedPath);
+                renderTree();
+            } else if (selectedPath) {
+                // Go to parent
+                const parts = selectedPath.split('.');
+                parts.pop();
+                const parentPath = parts.join('.');
+                if (onNodeSelect) {
+                    onNodeSelect(parentPath);
+                }
+            }
+            break;
+
+        case 'ArrowRight':
+            e.preventDefault();
+            const node = findNode(treeData, selectedPath);
+            if (node && node.has_children) {
+                if (!expandedNodes.has(selectedPath)) {
+                    // Expand
+                    window.treeViewToggle(selectedPath);
+                } else if (node.children && node.children.length > 0) {
+                    // Go to first child
+                    if (onNodeSelect) {
+                        onNodeSelect(node.children[0].path);
+                    }
+                }
+            }
+            break;
+
+        case 'Enter':
+        case ' ':
+            e.preventDefault();
+            const currentNode = findNode(treeData, selectedPath);
+            if (currentNode && currentNode.has_children) {
+                window.treeViewToggle(selectedPath);
+            }
+            break;
     }
-    return n.toString();
 }
 
-/**
- * Expand the path to show a specific node
- * @param {string} targetPath - The path to expand to
- * @param {Function} getChildren - Function to get children from WASM
- */
-export async function expandToPath(targetPath, getChildren) {
-    if (!treeData || !targetPath) return;
-
-    const parts = targetPath.split('.');
-    let currentPath = '';
-
-    for (let i = 0; i < parts.length; i++) {
-        // Expand the current path
-        await expandNode(currentPath, getChildren);
-
-        // Build next path
-        if (currentPath === '') {
-            currentPath = parts[i];
-        } else {
-            currentPath = currentPath + '.' + parts[i];
+function selectNodeByIndex(idx) {
+    if (idx >= 0 && idx < visibleNodes.length) {
+        const path = visibleNodes[idx];
+        if (onNodeSelect) {
+            onNodeSelect(path);
         }
     }
-
-    renderTree();
 }

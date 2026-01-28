@@ -13,74 +13,69 @@ import init, {
 
 import * as TreeView from './tree-view.js';
 
-// Global state
+// === State ===
 let wasmLoaded = false;
 let currentConfig = null;
 let currentPath = '';
 let treeBuilt = false;
+let currentNodeState = null;
 
 // === DOM Elements ===
-const elements = {
-    // Config inputs
+const el = {
+    // Config
     spotName: document.getElementById('spot-name'),
     numPlayers: document.getElementById('num-players'),
     stackSize: document.getElementById('stack-size'),
-    betType: document.getElementById('bet-type'),
     sbSize: document.getElementById('sb-size'),
     bbSize: document.getElementById('bb-size'),
-    preflopOpenBet: document.getElementById('preflop-open-bet'),
+    betType: document.getElementById('bet-type'),
+    maxRaises: document.getElementById('max-raises'),
     preflopOpenRaise: document.getElementById('preflop-open-raise'),
     preflop3betRaise: document.getElementById('preflop-3bet-raise'),
-    flopBet: document.getElementById('flop-bet'),
-    flopRaise: document.getElementById('flop-raise'),
-    turnBet: document.getElementById('turn-bet'),
-    turnRaise: document.getElementById('turn-raise'),
-    riverBet: document.getElementById('river-bet'),
-    riverRaise: document.getElementById('river-raise'),
-    maxRaises: document.getElementById('max-raises'),
+    postflopBet: document.getElementById('postflop-bet'),
+    postflopRaise: document.getElementById('postflop-raise'),
 
     // Buttons
     buildBtn: document.getElementById('build-btn'),
     saveBtn: document.getElementById('save-btn'),
     loadBtn: document.getElementById('load-btn'),
     loadInput: document.getElementById('load-input'),
-    backBtn: document.getElementById('back-btn'),
-    resetBtn: document.getElementById('reset-btn'),
-
-    // Tree view
-    treeView: document.getElementById('tree-view'),
     expandAllBtn: document.getElementById('expand-all-btn'),
     collapseAllBtn: document.getElementById('collapse-all-btn'),
 
-    // Tree navigator
-    streetBadge: document.getElementById('street-badge'),
-    potValue: document.getElementById('pot-value'),
-    playerInfo: document.getElementById('player-info'),
-    playerBadge: document.getElementById('player-badge'),
-    stackValue: document.getElementById('stack-value'),
-    actionButtons: document.getElementById('action-buttons'),
-    actionsContainer: document.getElementById('actions-container'),
-    terminalResult: document.getElementById('terminal-result'),
-    terminalText: document.getElementById('terminal-text'),
-    historyList: document.getElementById('history-list'),
+    // Tree
+    treeView: document.getElementById('tree-view'),
     breadcrumb: document.getElementById('breadcrumb'),
+
+    // Node Inspector
+    nodeDetails: document.getElementById('node-details'),
+    streetBadge: document.getElementById('street-badge'),
+    playerBadge: document.getElementById('player-badge'),
+    potValue: document.getElementById('pot-value'),
+    toCallValue: document.getElementById('to-call-value'),
+    stackValue: document.getElementById('stack-value'),
+    terminalInfo: document.getElementById('terminal-info'),
+    terminalText: document.getElementById('terminal-text'),
+
+    // Enabled Actions
+    enabledActions: document.getElementById('enabled-actions'),
+    actionCount: document.getElementById('action-count'),
+    childrenSection: document.getElementById('children-section'),
+    paletteSection: document.getElementById('palette-section'),
+
+    // Palette
+    addActionsBtn: document.getElementById('add-actions-btn'),
+    removeActionsBtn: document.getElementById('remove-actions-btn'),
+    customSize: document.getElementById('custom-size'),
+    addCustomBtn: document.getElementById('add-custom-btn'),
+    applyTemplateBtn: document.getElementById('apply-template-btn'),
+    pruneSubtreeBtn: document.getElementById('prune-subtree-btn'),
 
     // Stats
     statNodes: document.getElementById('stat-nodes'),
     statTerminals: document.getElementById('stat-terminals'),
-    statPlayerNodes: document.getElementById('stat-player-nodes'),
     statDepth: document.getElementById('stat-depth'),
-    statInfosets: document.getElementById('stat-infosets'),
-    statMemoryCompressed: document.getElementById('stat-memory-compressed'),
-    statMemoryUncompressed: document.getElementById('stat-memory-uncompressed'),
-    statPathDepth: document.getElementById('stat-path-depth'),
-    statEffectiveStack: document.getElementById('stat-effective-stack'),
-
-    // Preview
-    previewSize: document.getElementById('preview-size'),
-    previewPot: document.getElementById('preview-pot'),
-    previewStack: document.getElementById('preview-stack'),
-    previewResult: document.getElementById('preview-result'),
+    statMemory: document.getElementById('stat-memory'),
 
     // Status
     statusBar: document.getElementById('status-bar')
@@ -93,12 +88,12 @@ async function initialize() {
     try {
         await init();
         wasmLoaded = true;
-        setStatus('Ready', 'success');
+        setStatus('Ready - Press Ctrl+B to build tree', 'success');
 
         // Initialize tree view
-        TreeView.initTreeView(elements.treeView, handleTreeNodeSelect);
+        TreeView.initTreeView(el.treeView, handleNodeSelect);
 
-        // Expose toggle function for tree view clicks
+        // Expose toggle function for tree view
         window.treeViewToggle = (path) => {
             TreeView.toggleNode(path, getTreeChildren);
         };
@@ -111,8 +106,6 @@ async function initialize() {
         // Set up event listeners
         setupEventListeners();
 
-        // Auto-build tree
-        buildTree();
     } catch (error) {
         setStatus(`Failed to load WASM: ${error.message}`, 'error');
         console.error('WASM init error:', error);
@@ -121,26 +114,49 @@ async function initialize() {
 
 // === Event Listeners ===
 function setupEventListeners() {
-    // Build button
-    elements.buildBtn.addEventListener('click', buildTree);
+    // Build
+    el.buildBtn.addEventListener('click', buildTree);
 
-    // Save/Load buttons
-    elements.saveBtn.addEventListener('click', saveConfig);
-    elements.loadBtn.addEventListener('click', () => elements.loadInput.click());
-    elements.loadInput.addEventListener('change', loadConfig);
+    // Save/Load
+    el.saveBtn.addEventListener('click', saveConfig);
+    el.loadBtn.addEventListener('click', () => el.loadInput.click());
+    el.loadInput.addEventListener('change', loadConfig);
 
-    // Navigation buttons
-    elements.backBtn.addEventListener('click', navigateBack);
-    elements.resetBtn.addEventListener('click', resetNavigation);
+    // Tree controls
+    el.expandAllBtn.addEventListener('click', handleExpandAll);
+    el.collapseAllBtn.addEventListener('click', handleCollapseAll);
 
-    // Tree view controls
-    elements.expandAllBtn.addEventListener('click', handleExpandAll);
-    elements.collapseAllBtn.addEventListener('click', handleCollapseAll);
+    // Palette buttons
+    document.querySelectorAll('.palette-btn[data-action]').forEach(btn => {
+        btn.addEventListener('click', () => togglePaletteButton(btn));
+    });
 
-    // Bet size preview
-    elements.previewSize.addEventListener('input', updateBetSizePreview);
-    elements.previewPot.addEventListener('input', updateBetSizePreview);
-    elements.previewStack.addEventListener('input', updateBetSizePreview);
+    el.addActionsBtn.addEventListener('click', handleAddActions);
+    el.removeActionsBtn.addEventListener('click', handleRemoveActions);
+    el.addCustomBtn.addEventListener('click', handleAddCustom);
+    el.applyTemplateBtn.addEventListener('click', handleApplyTemplate);
+    el.pruneSubtreeBtn.addEventListener('click', handlePruneSubtree);
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', handleGlobalKeyDown);
+}
+
+function handleGlobalKeyDown(e) {
+    // Ctrl+B to build
+    if (e.ctrlKey && e.key === 'b') {
+        e.preventDefault();
+        buildTree();
+    }
+    // Ctrl+E to expand all
+    if (e.ctrlKey && e.key === 'e') {
+        e.preventDefault();
+        handleExpandAll();
+    }
+    // Ctrl+W to collapse all
+    if (e.ctrlKey && e.key === 'w') {
+        e.preventDefault();
+        handleCollapseAll();
+    }
 }
 
 // === Build Tree ===
@@ -153,26 +169,24 @@ async function buildTree() {
     setStatus('Building tree...');
 
     try {
-        // Collect config from UI
         currentConfig = collectConfigFromUI();
         const configJson = JSON.stringify(currentConfig);
 
-        // Validate first
+        // Validate
         const validation = validate_config(configJson);
         if (!validation.valid) {
             setStatus(`Validation errors: ${validation.errors.join(', ')}`, 'error');
             return;
         }
 
-        // Build tree
+        // Build
         const result = build_tree(configJson);
-
         if (!result.success) {
             setStatus(`Build failed: ${result.error}`, 'error');
             return;
         }
 
-        // Update stats display
+        // Update stats
         updateStats(result.stats, result.memory);
 
         treeBuilt = true;
@@ -181,38 +195,39 @@ async function buildTree() {
         // Load tree view
         await loadTreeView();
 
-        // Navigate to root
-        navigateToPath('');
+        // Select root
+        handleNodeSelect('');
 
         setStatus('Tree built successfully', 'success');
+
     } catch (error) {
         setStatus(`Build error: ${error.message}`, 'error');
         console.error('Build error:', error);
     }
 }
 
-// === Config Management ===
+// === Config ===
 function collectConfigFromUI() {
-    const sb = parseInt(elements.sbSize.value) || 1;
-    const bb = parseInt(elements.bbSize.value) || 2;
-    const stack = parseInt(elements.stackSize.value) || 100;
+    const sb = parseInt(el.sbSize.value) || 1;
+    const bb = parseInt(el.bbSize.value) || 2;
+    const stack = parseInt(el.stackSize.value) || 100;
 
     return {
-        name: elements.spotName.value,
-        num_players: parseInt(elements.numPlayers.value),
+        name: el.spotName.value,
+        num_players: parseInt(el.numPlayers.value),
         starting_stacks: [stack * bb],
-        bet_type: elements.betType.value,
+        bet_type: el.betType.value,
         preflop: {
             blinds: [sb, bb],
             ante: 0,
             bb_ante: 0,
             open_sizes: {
-                bet: elements.preflopOpenBet.value,
-                raise: elements.preflopOpenRaise.value
+                bet: '',
+                raise: el.preflopOpenRaise.value
             },
             three_bet_sizes: {
                 bet: '',
-                raise: elements.preflop3betRaise.value
+                raise: el.preflop3betRaise.value
             },
             four_bet_sizes: {
                 bet: '',
@@ -222,23 +237,23 @@ function collectConfigFromUI() {
         },
         flop: {
             sizes: {
-                bet: elements.flopBet.value,
-                raise: elements.flopRaise.value
+                bet: el.postflopBet.value,
+                raise: el.postflopRaise.value
             }
         },
         turn: {
             sizes: {
-                bet: elements.turnBet.value,
-                raise: elements.turnRaise.value
+                bet: el.postflopBet.value,
+                raise: el.postflopRaise.value
             }
         },
         river: {
             sizes: {
-                bet: elements.riverBet.value,
-                raise: elements.riverRaise.value
+                bet: el.postflopBet.value,
+                raise: el.postflopRaise.value
             }
         },
-        max_raises_per_round: parseInt(elements.maxRaises.value) || 4,
+        max_raises_per_round: parseInt(el.maxRaises.value) || 4,
         force_all_in_threshold: 0.15,
         merge_threshold: 0.1,
         add_all_in_threshold: 1.5
@@ -246,29 +261,22 @@ function collectConfigFromUI() {
 }
 
 function loadConfigToUI(config) {
-    elements.spotName.value = config.name || 'HU 100bb';
-    elements.numPlayers.value = config.num_players || 2;
+    el.spotName.value = config.name || 'HU 100bb';
+    el.numPlayers.value = config.num_players || 2;
 
     const bb = config.preflop?.blinds?.[1] || 2;
     const stack = config.starting_stacks?.[0] || 200;
-    elements.stackSize.value = Math.round(stack / bb);
+    el.stackSize.value = Math.round(stack / bb);
 
-    elements.betType.value = config.bet_type || 'NoLimit';
-    elements.sbSize.value = config.preflop?.blinds?.[0] || 1;
-    elements.bbSize.value = bb;
+    el.betType.value = config.bet_type || 'NoLimit';
+    el.sbSize.value = config.preflop?.blinds?.[0] || 1;
+    el.bbSize.value = bb;
+    el.maxRaises.value = config.max_raises_per_round || 4;
 
-    elements.preflopOpenBet.value = config.preflop?.open_sizes?.bet || '';
-    elements.preflopOpenRaise.value = config.preflop?.open_sizes?.raise || '';
-    elements.preflop3betRaise.value = config.preflop?.three_bet_sizes?.raise || '';
-
-    elements.flopBet.value = config.flop?.sizes?.bet || '';
-    elements.flopRaise.value = config.flop?.sizes?.raise || '';
-    elements.turnBet.value = config.turn?.sizes?.bet || '';
-    elements.turnRaise.value = config.turn?.sizes?.raise || '';
-    elements.riverBet.value = config.river?.sizes?.bet || '';
-    elements.riverRaise.value = config.river?.sizes?.raise || '';
-
-    elements.maxRaises.value = config.max_raises_per_round || 4;
+    el.preflopOpenRaise.value = config.preflop?.open_sizes?.raise || '2.5x, 3x';
+    el.preflop3betRaise.value = config.preflop?.three_bet_sizes?.raise || '3x, a';
+    el.postflopBet.value = config.flop?.sizes?.bet || '33%, 67%, 100%';
+    el.postflopRaise.value = config.flop?.sizes?.raise || '2.5x, a';
 }
 
 function saveConfig() {
@@ -296,19 +304,61 @@ function loadConfig(event) {
             const config = JSON.parse(e.target.result);
             currentConfig = config;
             loadConfigToUI(config);
-            buildTree();
-            setStatus('Config loaded', 'success');
+            setStatus('Config loaded - click Build to apply', 'success');
         } catch (error) {
             setStatus(`Failed to load config: ${error.message}`, 'error');
         }
     };
     reader.readAsText(file);
-
-    // Reset input so same file can be loaded again
     event.target.value = '';
 }
 
-// === Tree Navigation ===
+// === Tree View ===
+async function loadTreeView() {
+    if (!wasmLoaded || !currentConfig) return;
+
+    try {
+        const configJson = JSON.stringify(currentConfig);
+        const root = get_tree_root(configJson);
+        if (root) {
+            TreeView.setTreeData(root);
+        }
+    } catch (error) {
+        console.error('Error loading tree view:', error);
+        TreeView.clearTree();
+    }
+}
+
+async function getTreeChildren(path) {
+    if (!wasmLoaded || !currentConfig) return [];
+
+    try {
+        const configJson = JSON.stringify(currentConfig);
+        return get_tree_children(configJson, path) || [];
+    } catch (error) {
+        console.error('Error getting children:', error);
+        return [];
+    }
+}
+
+function handleNodeSelect(path) {
+    currentPath = path;
+    TreeView.setSelectedPath(path);
+    navigateToPath(path);
+}
+
+async function handleExpandAll() {
+    if (!treeBuilt) return;
+    setStatus('Expanding tree...');
+    await TreeView.expandAll(getTreeChildren, 3);
+    setStatus('Tree expanded', 'success');
+}
+
+function handleCollapseAll() {
+    TreeView.collapseAll();
+}
+
+// === Navigation ===
 function navigateToPath(path) {
     if (!wasmLoaded || !treeBuilt) return;
 
@@ -321,16 +371,94 @@ function navigateToPath(path) {
             return;
         }
 
-        currentPath = path;
-        updateNodeDisplay(nodeState);
-        updateNavigationControls();
-
-        // Sync tree view selection
-        TreeView.setSelectedPath(path);
+        currentNodeState = nodeState;
+        updateNodeInspector(nodeState);
+        updateBreadcrumb(nodeState);
 
     } catch (error) {
         setStatus(`Navigation error: ${error.message}`, 'error');
         console.error('Navigation error:', error);
+    }
+}
+
+// === Node Inspector ===
+function updateNodeInspector(state) {
+    // Street badge
+    const street = state.street?.toLowerCase() || 'preflop';
+    el.streetBadge.textContent = state.street || 'PREFLOP';
+    el.streetBadge.className = `street-badge ${street}`;
+
+    if (state.node_type === 'terminal') {
+        // Terminal node
+        el.nodeDetails.style.display = 'none';
+        el.terminalInfo.style.display = 'flex';
+        el.terminalText.textContent = state.terminal_result || 'Terminal';
+        el.childrenSection.style.display = 'none';
+        el.paletteSection.style.display = 'none';
+    } else {
+        // Player node
+        el.nodeDetails.style.display = 'block';
+        el.terminalInfo.style.display = 'none';
+        el.childrenSection.style.display = 'block';
+        el.paletteSection.style.display = 'block';
+
+        el.playerBadge.textContent = state.player_name || 'P' + state.player_to_act;
+        el.potValue.textContent = state.pot || 0;
+        el.toCallValue.textContent = getToCall(state);
+        el.stackValue.textContent = state.stacks?.[state.player_to_act] || 0;
+
+        // Update enabled actions (children)
+        updateEnabledActions(state.actions || []);
+    }
+}
+
+function getToCall(state) {
+    // Calculate amount to call from last action
+    // This is simplified - would need more state tracking for accuracy
+    return 0;
+}
+
+function updateEnabledActions(actions) {
+    el.actionCount.textContent = `(${actions.length})`;
+
+    if (actions.length === 0) {
+        el.enabledActions.innerHTML = '<div class="empty-state">No actions at this node</div>';
+        return;
+    }
+
+    el.enabledActions.innerHTML = '';
+
+    for (const action of actions) {
+        const item = document.createElement('div');
+        item.className = 'enabled-action';
+        item.dataset.index = action.index;
+
+        const icon = document.createElement('span');
+        icon.className = `enabled-action-icon ${action.action_type}`;
+        item.appendChild(icon);
+
+        const label = document.createElement('span');
+        label.className = 'enabled-action-label';
+        label.textContent = action.name;
+        item.appendChild(label);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'enabled-action-delete';
+        deleteBtn.innerHTML = '&times;';
+        deleteBtn.title = 'Remove action';
+        deleteBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            // TODO: Implement action removal
+            setStatus('Action removal not yet implemented', 'warning');
+        });
+        item.appendChild(deleteBtn);
+
+        // Click to navigate to child
+        item.addEventListener('click', () => {
+            handleActionClick(action.index);
+        });
+
+        el.enabledActions.appendChild(item);
     }
 }
 
@@ -347,279 +475,136 @@ async function handleActionClick(actionIndex) {
         }
 
         currentPath = nodeState.path;
-        updateNodeDisplay(nodeState);
-        updateNavigationControls();
 
-        // Sync tree view - expand path and select
+        // Expand path and select in tree
         await TreeView.expandToPath(currentPath, getTreeChildren);
         TreeView.setSelectedPath(currentPath);
 
+        currentNodeState = nodeState;
+        updateNodeInspector(nodeState);
+        updateBreadcrumb(nodeState);
+
     } catch (error) {
         setStatus(`Action error: ${error.message}`, 'error');
-        console.error('Action error:', error);
     }
 }
 
-function navigateBack() {
-    if (!currentPath) return;
+// === Breadcrumb ===
+function updateBreadcrumb(state) {
+    el.breadcrumb.innerHTML = '';
 
-    const parts = currentPath.split('.');
-    parts.pop();
-    navigateToPath(parts.join('.'));
-}
-
-function resetNavigation() {
-    navigateToPath('');
-}
-
-function jumpToHistoryPoint(path) {
-    navigateToPath(path);
-}
-
-// === UI Updates ===
-function updateNodeDisplay(nodeState) {
-    // Update street badge
-    const streetClass = nodeState.street.toLowerCase();
-    elements.streetBadge.textContent = nodeState.street;
-    elements.streetBadge.className = `street-badge ${streetClass}`;
-
-    // Update pot
-    elements.potValue.textContent = nodeState.pot;
-
-    // Handle different node types
-    if (nodeState.node_type === 'player') {
-        elements.playerInfo.style.display = 'flex';
-        elements.actionsContainer.style.display = 'block';
-        elements.terminalResult.style.display = 'none';
-
-        elements.playerBadge.textContent = nodeState.player_name;
-
-        // Show current player's stack
-        const playerStack = nodeState.stacks[nodeState.player_to_act];
-        elements.stackValue.textContent = playerStack;
-
-        // Render action buttons
-        renderActionButtons(nodeState.actions);
-
-    } else if (nodeState.node_type === 'terminal') {
-        elements.playerInfo.style.display = 'none';
-        elements.actionsContainer.style.display = 'none';
-        elements.terminalResult.style.display = 'flex';
-
-        elements.terminalText.textContent = nodeState.terminal_result;
-    }
-
-    // Update history
-    renderHistory(nodeState.action_history);
-
-    // Update breadcrumb
-    renderBreadcrumb(nodeState.action_history);
-
-    // Update path depth stat
-    const pathDepth = currentPath ? currentPath.split('.').length : 0;
-    elements.statPathDepth.textContent = pathDepth;
-}
-
-function renderActionButtons(actions) {
-    elements.actionButtons.innerHTML = '';
-
-    for (const action of actions) {
-        const btn = document.createElement('button');
-        btn.className = `action-btn action-${action.action_type}`;
-        btn.textContent = action.name;
-        btn.addEventListener('click', () => handleActionClick(action.index));
-        elements.actionButtons.appendChild(btn);
-    }
-}
-
-function renderHistory(history) {
-    elements.historyList.innerHTML = '';
-
-    if (history.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'history-empty';
-        empty.textContent = 'No actions yet';
-        empty.style.color = 'var(--text-secondary)';
-        empty.style.fontStyle = 'italic';
-        elements.historyList.appendChild(empty);
-        return;
-    }
-
-    for (const item of history) {
-        const div = document.createElement('div');
-        div.className = 'history-item';
-        div.addEventListener('click', () => jumpToHistoryPoint(item.path));
-
-        const player = document.createElement('span');
-        player.className = 'history-player';
-        player.textContent = item.player_name;
-
-        const action = document.createElement('span');
-        action.className = 'history-action';
-        action.textContent = item.action;
-
-        div.appendChild(player);
-        div.appendChild(action);
-        elements.historyList.appendChild(div);
-    }
-}
-
-function renderBreadcrumb(history) {
-    elements.breadcrumb.innerHTML = '';
-
-    // Root crumb
+    // Root
     const rootCrumb = document.createElement('span');
-    rootCrumb.className = `crumb ${history.length === 0 ? 'active' : ''}`;
+    rootCrumb.className = `crumb ${currentPath === '' ? 'active' : ''}`;
     rootCrumb.textContent = 'Root';
-    rootCrumb.addEventListener('click', resetNavigation);
-    elements.breadcrumb.appendChild(rootCrumb);
+    rootCrumb.addEventListener('click', () => handleNodeSelect(''));
+    el.breadcrumb.appendChild(rootCrumb);
 
-    // Add crumbs for each action
+    // Action history
+    const history = state.action_history || [];
     for (let i = 0; i < history.length; i++) {
         const item = history[i];
-        const isLast = i === history.length - 1;
 
-        // Separator
         const sep = document.createElement('span');
-        sep.className = 'crumb-separator';
+        sep.className = 'crumb-sep';
         sep.textContent = '>';
-        elements.breadcrumb.appendChild(sep);
+        el.breadcrumb.appendChild(sep);
 
-        // Crumb
         const crumb = document.createElement('span');
-        crumb.className = `crumb ${isLast ? 'active' : ''}`;
+        crumb.className = `crumb ${i === history.length - 1 ? 'active' : ''}`;
         crumb.textContent = `${item.player_name} ${item.action}`;
 
-        // Build path to this point
         const pathParts = currentPath.split('.');
         const pathToHere = pathParts.slice(0, i + 1).join('.');
-        crumb.addEventListener('click', () => navigateToPath(pathToHere));
+        crumb.addEventListener('click', () => handleNodeSelect(pathToHere));
 
-        elements.breadcrumb.appendChild(crumb);
+        el.breadcrumb.appendChild(crumb);
     }
 }
 
-function updateNavigationControls() {
-    elements.backBtn.disabled = !currentPath;
+// === Action Palette ===
+function togglePaletteButton(btn) {
+    btn.classList.toggle('selected');
 }
 
+function getSelectedPaletteActions() {
+    const selected = [];
+    document.querySelectorAll('.palette-btn.selected[data-action]').forEach(btn => {
+        selected.push(btn.dataset.action);
+    });
+    return selected;
+}
+
+function handleAddActions() {
+    const selected = getSelectedPaletteActions();
+    if (selected.length === 0) {
+        setStatus('Select actions from the palette first', 'warning');
+        return;
+    }
+    // TODO: Implement action addition
+    setStatus(`Adding actions: ${selected.join(', ')} (not yet implemented)`, 'warning');
+}
+
+function handleRemoveActions() {
+    // TODO: Implement action removal
+    setStatus('Action removal not yet implemented', 'warning');
+}
+
+function handleAddCustom() {
+    const sizeStr = el.customSize.value.trim();
+    if (!sizeStr) {
+        setStatus('Enter a custom size', 'warning');
+        return;
+    }
+    // TODO: Implement custom action addition
+    setStatus(`Adding custom size: ${sizeStr} (not yet implemented)`, 'warning');
+}
+
+function handleApplyTemplate() {
+    // TODO: Implement template application
+    setStatus('Template application not yet implemented', 'warning');
+}
+
+function handlePruneSubtree() {
+    // TODO: Implement subtree pruning
+    setStatus('Subtree pruning not yet implemented', 'warning');
+}
+
+// === Stats ===
 function updateStats(stats, memory) {
     if (stats) {
-        elements.statNodes.textContent = stats.node_count.toLocaleString();
-        elements.statTerminals.textContent = stats.terminal_count.toLocaleString();
-        elements.statPlayerNodes.textContent = stats.player_node_count.toLocaleString();
-        elements.statDepth.textContent = stats.max_depth;
+        el.statNodes.textContent = formatNumber(stats.node_count);
+        el.statTerminals.textContent = formatNumber(stats.terminal_count);
+        el.statDepth.textContent = stats.max_depth;
     }
 
     if (memory) {
-        elements.statInfosets.textContent = memory.info_set_count.toLocaleString();
-        elements.statMemoryCompressed.textContent = formatBytes(memory.compressed_bytes);
-        elements.statMemoryUncompressed.textContent = formatBytes(memory.uncompressed_bytes);
-    }
-
-    // Update effective stack
-    const bb = parseInt(elements.bbSize.value) || 2;
-    const stack = parseInt(elements.stackSize.value) || 100;
-    elements.statEffectiveStack.textContent = `${stack} BB`;
-}
-
-// === Bet Size Preview ===
-function updateBetSizePreview() {
-    if (!wasmLoaded) return;
-
-    const sizeStr = elements.previewSize.value.trim();
-    if (!sizeStr) {
-        elements.previewResult.textContent = 'Enter a bet size to preview';
-        elements.previewResult.className = 'preview-result';
-        return;
-    }
-
-    const pot = parseInt(elements.previewPot.value) || 100;
-    const stack = parseInt(elements.previewStack.value) || 500;
-
-    try {
-        const result = parse_bet_size_preview(sizeStr, pot, stack);
-
-        if (result.valid) {
-            const pctStr = result.pot_percentage !== null
-                ? ` (${result.pot_percentage.toFixed(1)}% pot)`
-                : '';
-            elements.previewResult.textContent = `${result.chips} chips${pctStr}`;
-            elements.previewResult.className = 'preview-result valid';
-        } else {
-            elements.previewResult.textContent = result.error;
-            elements.previewResult.className = 'preview-result invalid';
-        }
-    } catch (error) {
-        elements.previewResult.textContent = error.message;
-        elements.previewResult.className = 'preview-result invalid';
-    }
-}
-
-// === Tree View Helpers ===
-async function getTreeChildren(path) {
-    if (!wasmLoaded || !currentConfig) return [];
-
-    try {
-        const configJson = JSON.stringify(currentConfig);
-        const children = get_tree_children(configJson, path);
-        return children || [];
-    } catch (error) {
-        console.error('Error getting tree children:', error);
-        return [];
-    }
-}
-
-function handleTreeNodeSelect(path) {
-    // Navigate to the selected node (this also syncs tree view selection)
-    navigateToPath(path);
-}
-
-async function handleExpandAll() {
-    if (!treeBuilt) return;
-    setStatus('Expanding tree...');
-    await TreeView.expandAll(getTreeChildren, 3);
-    setStatus('Tree expanded', 'success');
-}
-
-function handleCollapseAll() {
-    TreeView.collapseAll();
-}
-
-async function loadTreeView() {
-    if (!wasmLoaded || !currentConfig) return;
-
-    try {
-        const configJson = JSON.stringify(currentConfig);
-        const root = get_tree_root(configJson);
-        if (root) {
-            TreeView.setTreeData(root);
-        }
-    } catch (error) {
-        console.error('Error loading tree view:', error);
-        TreeView.clearTree();
+        el.statMemory.textContent = formatBytes(memory.compressed_bytes);
     }
 }
 
 // === Utilities ===
+function formatNumber(n) {
+    if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+    return n.toLocaleString();
+}
+
 function formatBytes(bytes) {
     if (typeof bytes !== 'number') return '-';
-
     const units = ['B', 'KB', 'MB', 'GB'];
     let size = bytes;
-    let unitIndex = 0;
-
-    while (size >= 1024 && unitIndex < units.length - 1) {
+    let i = 0;
+    while (size >= 1024 && i < units.length - 1) {
         size /= 1024;
-        unitIndex++;
+        i++;
     }
-
-    return `${size.toFixed(2)} ${units[unitIndex]}`;
+    return `${size.toFixed(1)} ${units[i]}`;
 }
 
 function setStatus(message, type = '') {
-    elements.statusBar.textContent = message;
-    elements.statusBar.className = `status-bar ${type}`;
+    el.statusBar.textContent = message;
+    el.statusBar.className = `status-bar ${type}`;
 }
 
 // === Start ===

@@ -10,6 +10,12 @@
     <div class="app-container">
         <header class="app-header">
             <h1>Poker Tree Builder</h1>
+            <div class="header-actions">
+                <button id="build-btn" class="btn btn-primary">Build Tree</button>
+                <button id="save-btn" class="btn btn-secondary">Save</button>
+                <button id="load-btn" class="btn btn-secondary">Load</button>
+                <input type="file" id="load-input" accept=".json" style="display: none;">
+            </div>
         </header>
 
         <div class="main-content">
@@ -21,31 +27,22 @@
                         <label for="spot-name">Spot Name</label>
                         <input type="text" id="spot-name" value="HU 100bb">
                     </div>
-                    <div class="form-group">
-                        <label for="num-players">Players</label>
-                        <select id="num-players">
-                            <option value="2" selected>2 (Heads-Up)</option>
-                            <option value="3">3</option>
-                            <option value="4">4</option>
-                            <option value="5">5</option>
-                            <option value="6">6 (Full Ring)</option>
-                        </select>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="num-players">Players</label>
+                            <select id="num-players">
+                                <option value="2" selected>2</option>
+                                <option value="3">3</option>
+                                <option value="4">4</option>
+                                <option value="5">5</option>
+                                <option value="6">6</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="stack-size">Stack (BB)</label>
+                            <input type="number" id="stack-size" value="100" min="1">
+                        </div>
                     </div>
-                    <div class="form-group">
-                        <label for="stack-size">Stack (BB)</label>
-                        <input type="number" id="stack-size" value="100" min="1">
-                    </div>
-                    <div class="form-group">
-                        <label for="bet-type">Bet Type</label>
-                        <select id="bet-type">
-                            <option value="NoLimit" selected>No Limit</option>
-                            <option value="PotLimit">Pot Limit</option>
-                        </select>
-                    </div>
-                </section>
-
-                <section class="config-section">
-                    <h2>Blinds</h2>
                     <div class="form-row">
                         <div class="form-group">
                             <label for="sb-size">SB</label>
@@ -56,215 +53,165 @@
                             <input type="number" id="bb-size" value="2" min="1">
                         </div>
                     </div>
-                </section>
-
-                <section class="config-section">
-                    <h2>Preflop Sizes</h2>
                     <div class="form-group">
-                        <label for="preflop-open-bet">Open Bet</label>
-                        <input type="text" id="preflop-open-bet" value="50%, 75%" placeholder="33%, 50%">
+                        <label for="bet-type">Bet Type</label>
+                        <select id="bet-type">
+                            <option value="NoLimit" selected>No Limit</option>
+                            <option value="PotLimit">Pot Limit</option>
+                        </select>
                     </div>
-                    <div class="form-group">
-                        <label for="preflop-open-raise">Open Raise</label>
-                        <input type="text" id="preflop-open-raise" value="2.5x, 3x, a" placeholder="2.5x, 3x, a">
-                    </div>
-                    <div class="form-group">
-                        <label for="preflop-3bet-raise">3-Bet Raise</label>
-                        <input type="text" id="preflop-3bet-raise" value="2.5x, 3x, a" placeholder="2.5x, 3x, a">
-                    </div>
-                </section>
-
-                <section class="config-section">
-                    <h2>Flop Sizes</h2>
-                    <div class="form-group">
-                        <label for="flop-bet">Bet</label>
-                        <input type="text" id="flop-bet" value="33%, 67%, 100%" placeholder="33%, 67%, 100%">
-                    </div>
-                    <div class="form-group">
-                        <label for="flop-raise">Raise</label>
-                        <input type="text" id="flop-raise" value="2.5x, a" placeholder="2.5x, a">
-                    </div>
-                </section>
-
-                <section class="config-section">
-                    <h2>Turn Sizes</h2>
-                    <div class="form-group">
-                        <label for="turn-bet">Bet</label>
-                        <input type="text" id="turn-bet" value="33%, 67%, 100%" placeholder="33%, 67%, 100%">
-                    </div>
-                    <div class="form-group">
-                        <label for="turn-raise">Raise</label>
-                        <input type="text" id="turn-raise" value="2.5x, a" placeholder="2.5x, a">
-                    </div>
-                </section>
-
-                <section class="config-section">
-                    <h2>River Sizes</h2>
-                    <div class="form-group">
-                        <label for="river-bet">Bet</label>
-                        <input type="text" id="river-bet" value="33%, 67%, 100%" placeholder="33%, 67%, 100%">
-                    </div>
-                    <div class="form-group">
-                        <label for="river-raise">Raise</label>
-                        <input type="text" id="river-raise" value="2.5x, a" placeholder="2.5x, a">
-                    </div>
-                </section>
-
-                <section class="config-section">
-                    <h2>Tree Options</h2>
                     <div class="form-group">
                         <label for="max-raises">Max Raises</label>
                         <input type="number" id="max-raises" value="4" min="1" max="10">
                     </div>
                 </section>
 
-                <div class="button-group">
-                    <button id="build-btn" class="btn btn-primary">Build Tree</button>
-                    <button id="save-btn" class="btn btn-secondary">Save Config</button>
-                    <button id="load-btn" class="btn btn-secondary">Load Config</button>
-                    <input type="file" id="load-input" accept=".json" style="display: none;">
-                </div>
-            </aside>
+                <section class="config-section">
+                    <h2>Default Sizing Templates</h2>
+                    <p class="config-hint">Used when adding new actions</p>
 
-            <!-- Center Panel: Tree View + Navigator -->
-            <main class="tree-panel">
-                <div class="center-split">
-                    <!-- Left: Collapsible Tree View -->
-                    <div class="tree-view-container">
-                        <div class="tree-view-header">
-                            <h2>Game Tree</h2>
-                            <div class="tree-controls">
-                                <button id="expand-all-btn" class="btn btn-small" title="Expand All">+</button>
-                                <button id="collapse-all-btn" class="btn btn-small" title="Collapse All">-</button>
-                            </div>
+                    <div class="sizing-group">
+                        <h3>Preflop</h3>
+                        <div class="form-group">
+                            <label for="preflop-open-raise">Open Raise</label>
+                            <input type="text" id="preflop-open-raise" value="2.5x, 3x" placeholder="2.5x, 3x">
                         </div>
-                        <div class="tree-view" id="tree-view">
-                            <!-- Tree nodes will be populated here -->
-                            <div class="tree-loading">Build tree to view</div>
+                        <div class="form-group">
+                            <label for="preflop-3bet-raise">3-Bet</label>
+                            <input type="text" id="preflop-3bet-raise" value="3x, a" placeholder="3x, a">
                         </div>
                     </div>
 
-                    <!-- Right: Click-through Navigator -->
-                    <div class="tree-navigator">
-                        <div class="node-state" id="node-state">
-                            <div class="state-header">
-                                <span class="street-badge" id="street-badge">PREFLOP</span>
-                                <span class="pot-display">Pot: <span id="pot-value">3</span></span>
-                            </div>
-
-                            <div class="player-info" id="player-info">
-                                <span class="player-badge" id="player-badge">BTN</span>
-                                <span class="player-text">to act</span>
-                                <span class="stack-display">Stack: <span id="stack-value">99</span></span>
-                            </div>
-
-                            <div class="actions-container" id="actions-container">
-                                <h3>Available Actions</h3>
-                                <div class="action-buttons" id="action-buttons">
-                                    <!-- Actions will be populated here -->
-                                </div>
-                            </div>
-
-                            <div class="terminal-result" id="terminal-result" style="display: none;">
-                                <span class="terminal-badge">TERMINAL</span>
-                                <span class="terminal-text" id="terminal-text">Showdown</span>
-                            </div>
+                    <div class="sizing-group">
+                        <h3>Postflop</h3>
+                        <div class="form-group">
+                            <label for="postflop-bet">Bet Sizes</label>
+                            <input type="text" id="postflop-bet" value="33%, 67%, 100%" placeholder="33%, 67%">
                         </div>
-
-                        <div class="history-panel">
-                            <h3>Action History</h3>
-                            <div class="history-list" id="history-list">
-                                <!-- History items will be populated here -->
-                            </div>
-                        </div>
-
-                        <div class="navigation-controls">
-                            <button id="back-btn" class="btn btn-nav" disabled>Back</button>
-                            <button id="reset-btn" class="btn btn-nav">Reset</button>
-                        </div>
-
-                        <div class="breadcrumb" id="breadcrumb">
-                            <span class="crumb active">Root</span>
+                        <div class="form-group">
+                            <label for="postflop-raise">Raise Sizes</label>
+                            <input type="text" id="postflop-raise" value="2.5x, a" placeholder="2.5x, a">
                         </div>
                     </div>
-                </div>
-            </main>
+                </section>
 
-            <!-- Right Panel: Stats -->
-            <aside class="stats-panel">
-                <section class="stats-section">
+                <section class="config-section">
                     <h2>Tree Statistics</h2>
                     <div class="stat-row">
-                        <span class="stat-label">Total Nodes</span>
+                        <span class="stat-label">Nodes</span>
                         <span class="stat-value" id="stat-nodes">-</span>
                     </div>
                     <div class="stat-row">
-                        <span class="stat-label">Terminal Nodes</span>
+                        <span class="stat-label">Terminal</span>
                         <span class="stat-value" id="stat-terminals">-</span>
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Player Nodes</span>
-                        <span class="stat-value" id="stat-player-nodes">-</span>
                     </div>
                     <div class="stat-row">
                         <span class="stat-label">Max Depth</span>
                         <span class="stat-value" id="stat-depth">-</span>
                     </div>
-                </section>
-
-                <section class="stats-section">
-                    <h2>Memory Estimate</h2>
                     <div class="stat-row">
-                        <span class="stat-label">Info Sets</span>
-                        <span class="stat-value" id="stat-infosets">-</span>
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Compressed</span>
-                        <span class="stat-value" id="stat-memory-compressed">-</span>
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Uncompressed</span>
-                        <span class="stat-value" id="stat-memory-uncompressed">-</span>
+                        <span class="stat-label">Memory Est.</span>
+                        <span class="stat-value" id="stat-memory">-</span>
                     </div>
                 </section>
+            </aside>
 
-                <section class="stats-section">
-                    <h2>Current Position</h2>
-                    <div class="stat-row">
-                        <span class="stat-label">Path Depth</span>
-                        <span class="stat-value" id="stat-path-depth">0</span>
+            <!-- Center: Tree View -->
+            <main class="tree-panel">
+                <div class="tree-header">
+                    <div class="breadcrumb" id="breadcrumb">
+                        <span class="crumb active">Root</span>
                     </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Effective Stack</span>
-                        <span class="stat-value" id="stat-effective-stack">-</span>
+                    <div class="tree-controls">
+                        <button id="expand-all-btn" class="btn btn-small" title="Expand All (Ctrl+E)">Expand</button>
+                        <button id="collapse-all-btn" class="btn btn-small" title="Collapse All (Ctrl+W)">Collapse</button>
                     </div>
-                </section>
+                </div>
+                <div class="tree-view" id="tree-view" tabindex="0">
+                    <div class="tree-loading">Build tree to view</div>
+                </div>
+            </main>
 
-                <section class="stats-section">
-                    <h2>Bet Size Preview</h2>
-                    <div class="form-group">
-                        <label for="preview-size">Size String</label>
-                        <input type="text" id="preview-size" placeholder="50%, 2.5x, e">
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="preview-pot">Pot</label>
-                            <input type="number" id="preview-pot" value="100">
+            <!-- Right Panel: Node Inspector -->
+            <aside class="inspector-panel">
+                <section class="inspector-section node-info">
+                    <h2>Node Inspector</h2>
+                    <div class="node-details" id="node-details">
+                        <div class="node-state-row">
+                            <span class="street-badge" id="street-badge">PREFLOP</span>
+                            <span class="player-badge" id="player-badge">BTN</span>
                         </div>
-                        <div class="form-group">
-                            <label for="preview-stack">Stack</label>
-                            <input type="number" id="preview-stack" value="500">
+                        <div class="node-stats">
+                            <div class="node-stat">
+                                <span class="stat-label">Pot</span>
+                                <span class="stat-value" id="pot-value">3</span>
+                            </div>
+                            <div class="node-stat">
+                                <span class="stat-label">To Call</span>
+                                <span class="stat-value" id="to-call-value">0</span>
+                            </div>
+                            <div class="node-stat">
+                                <span class="stat-label">Stack</span>
+                                <span class="stat-value" id="stack-value">99</span>
+                            </div>
                         </div>
                     </div>
-                    <div class="preview-result" id="preview-result">
-                        Enter a bet size to preview
+                    <div class="terminal-info" id="terminal-info" style="display: none;">
+                        <span class="terminal-badge">TERMINAL</span>
+                        <span class="terminal-text" id="terminal-text">Showdown</span>
+                    </div>
+                </section>
+
+                <section class="inspector-section" id="children-section">
+                    <h2>Enabled Actions <span class="action-count" id="action-count">(0)</span></h2>
+                    <div class="enabled-actions" id="enabled-actions">
+                        <!-- Enabled action items will be populated here -->
+                        <div class="empty-state">No actions at this node</div>
+                    </div>
+                </section>
+
+                <section class="inspector-section" id="palette-section">
+                    <h2>Action Palette</h2>
+                    <div class="action-palette">
+                        <div class="palette-row">
+                            <button class="palette-btn fold" data-action="fold">Fold</button>
+                            <button class="palette-btn check" data-action="check">Check</button>
+                            <button class="palette-btn call" data-action="call">Call</button>
+                        </div>
+                        <div class="palette-row">
+                            <button class="palette-btn bet" data-action="bet-33">33%</button>
+                            <button class="palette-btn bet" data-action="bet-50">50%</button>
+                            <button class="palette-btn bet" data-action="bet-67">67%</button>
+                            <button class="palette-btn bet" data-action="bet-100">100%</button>
+                        </div>
+                        <div class="palette-row">
+                            <button class="palette-btn raise" data-action="raise-2.5x">2.5x</button>
+                            <button class="palette-btn raise" data-action="raise-3x">3x</button>
+                            <button class="palette-btn allin" data-action="allin">All-in</button>
+                        </div>
+                        <div class="palette-row custom-size">
+                            <input type="text" id="custom-size" placeholder="Custom (e.g., 75%, 4x)">
+                            <button class="palette-btn custom" id="add-custom-btn">Add</button>
+                        </div>
+                    </div>
+                    <div class="palette-actions">
+                        <button id="add-actions-btn" class="btn btn-primary">Add Selected</button>
+                        <button id="remove-actions-btn" class="btn btn-danger">Remove Selected</button>
+                    </div>
+                </section>
+
+                <section class="inspector-section">
+                    <h2>Quick Actions</h2>
+                    <div class="quick-actions">
+                        <button id="apply-template-btn" class="btn btn-secondary">Apply Template to Subtree</button>
+                        <button id="prune-subtree-btn" class="btn btn-secondary">Prune Subtree</button>
                     </div>
                 </section>
             </aside>
         </div>
 
         <div class="status-bar" id="status-bar">
-            Ready - Load WASM module to begin
+            Ready - Press Ctrl+B to build tree
         </div>
     </div>
 
