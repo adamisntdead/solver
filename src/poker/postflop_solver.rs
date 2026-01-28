@@ -968,6 +968,28 @@ impl PostflopSolver {
     pub fn num_river_cards(&self) -> usize {
         self.valid_river_cards.len()
     }
+
+    /// Get string representations of all valid river cards (e.g., ["2c", "2d", ...]).
+    /// Returns empty vec for river-only boards.
+    pub fn river_card_strings(&self) -> Vec<String> {
+        use crate::poker::hands::card_to_string;
+        self.valid_river_cards
+            .iter()
+            .map(|&c| card_to_string(c))
+            .collect()
+    }
+
+    /// Get the raw card index for a given river card context index.
+    /// Returns None if the index is out of range or this is a river-only board.
+    pub fn river_card_at(&self, ctx: usize) -> Option<u8> {
+        self.valid_river_cards.get(ctx).copied()
+    }
+
+    /// Get the cards (c0, c1) for a player's hand at the given hand index.
+    pub fn hand_cards(&self, player: usize, hand_idx: usize) -> (u8, u8) {
+        let h = &self.hands[player][hand_idx];
+        (h.c0, h.c1)
+    }
 }
 
 // === Helper functions ===

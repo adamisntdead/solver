@@ -767,6 +767,184 @@ fn get_node_strategy_internal(
     }
 }
 
+// === River Card Context Functions ===
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RiverCardsResult {
+    pub has_river_cards: bool,
+    pub cards: Vec<String>,
+}
+
+/// Get the list of valid river cards for the current solver.
+///
+/// Returns { has_river_cards: bool, cards: ["2c", "2d", ...] }.
+/// `has_river_cards` is true when solving a turn spot (4-card board).
+#[wasm_bindgen]
+pub fn get_river_cards() -> JsValue {
+    let result = SOLVER_STATE.with(|state| {
+        let state = state.borrow();
+        match state.as_ref() {
+            Some(s) => {
+                let cards = s.solver.river_card_strings();
+                RiverCardsResult {
+                    has_river_cards: !cards.is_empty(),
+                    cards,
+                }
+            }
+            None => RiverCardsResult {
+                has_river_cards: false,
+                cards: vec![],
+            },
+        }
+    });
+    serde_wasm_bindgen::to_value(&result).unwrap()
+}
+
+/// Check if a node at the given path is below a chance node (has multiple card contexts).
+///
+/// Returns true if the node has more than 1 card context (i.e., it's a river betting node
+/// in a turn tree).
+#[wasm_bindgen]
+pub fn is_node_below_chance(path: &str) -> bool {
+    SOLVER_STATE.with(|state| {
+        let state = state.borrow();
+        let state = match state.as_ref() {
+            Some(s) => s,
+            None => return false,
+        };
+
+        let tree = &state.game.tree;
+        let node_idx = match navigate_indexed_tree(tree, path) {
+            Ok(idx) => idx,
+            Err(_) => return false,
+        };
+
+        state.solver.num_contexts(node_idx) > 1
+    })
+}
+
+/// Get the strategy for a specific node with a specific card context.
+///
+/// `card_context`: -1 for average across all river cards, 0+ for a specific river card index.
+/// When a specific card context is selected, hands that conflict with the river card are excluded.
+#[wasm_bindgen]
+pub fn get_node_strategy_for_context(path: &str, player: usize, card_context: i32) -> JsValue {
+    let result = SOLVER_STATE.with(|state| {
+        let state = state.borrow();
+        let state = match state.as_ref() {
+            Some(s) => s,
+            None => {
+                return NodeStrategyResult {
+                    success: false,
+                    error: Some("No solver active".to_string()),
+                    action_names: vec![],
+                    hands: vec![],
+                    aggregate: vec![],
+                }
+            }
+        };
+
+        if card_context < 0 {
+            // Average mode: use existing function
+            get_node_strategy_internal(state, path, player)
+        } else {
+            get_node_strategy_for_context_internal(state, path, player, card_context as usize)
+        }
+    });
+
+    serde_wasm_bindgen::to_value(&result).unwrap()
+}
+
+fn get_node_strategy_for_context_internal(
+    state: &SolverState,
+    path: &str,
+    player: usize,
+    ctx: usize,
+) -> NodeStrategyResult {
+    let tree = &state.game.tree;
+
+    // Navigate to the node
+    let node_idx = match navigate_indexed_tree(tree, path) {
+        Ok(idx) => idx,
+        Err(e) => {
+            return NodeStrategyResult {
+                success: false,
+                error: Some(e),
+                action_names: vec![],
+                hands: vec![],
+                aggregate: vec![],
+            }
+        }
+    };
+
+    let node = tree.get(node_idx);
+    let action_names: Vec<String> = node.actions.iter().map(|a| a.display()).collect();
+    let num_actions = action_names.len();
+
+    if num_actions == 0 {
+        return NodeStrategyResult {
+            success: true,
+            error: None,
+            action_names: vec![],
+            hands: vec![],
+            aggregate: vec![],
+        };
+    }
+
+    // Get the river card for this context to filter blocked hands
+    let river_card = state.solver.river_card_at(ctx);
+
+    let num_hands = state.solver.num_hands(player);
+    let mut hands = Vec::with_capacity(num_hands);
+    let mut aggregate = vec![0.0f32; num_actions];
+    let mut total_weight = 0.0f32;
+
+    for h in 0..num_hands {
+        let (combo_idx, weight) = state.solver.hand_info(player, h);
+
+        // Skip hands that conflict with the river card
+        if let Some(rc) = river_card {
+            let (c0, c1) = state.solver.hand_cards(player, h);
+            if c0 == rc || c1 == rc {
+                continue;
+            }
+        }
+
+        let combo = Combo::from_index(combo_idx);
+        let combo_str = combo_to_string(combo);
+
+        // Get strategy for this specific context (no averaging)
+        let actions = state.solver.get_hand_strategy_ctx(node_idx, h, player, ctx);
+
+        // Accumulate weighted aggregate
+        for (a, &prob) in actions.iter().enumerate() {
+            aggregate[a] += weight * prob;
+        }
+        total_weight += weight;
+
+        hands.push(HandStrategy {
+            combo: combo_str,
+            weight,
+            actions,
+        });
+    }
+
+    // Normalize aggregate
+    if total_weight > 0.0 {
+        for a in &mut aggregate {
+            *a /= total_weight;
+        }
+    }
+
+    NodeStrategyResult {
+        success: true,
+        error: None,
+        action_names,
+        hands,
+        aggregate,
+    }
+}
+
 /// Navigate an IndexedActionTree using a dot-separated action path.
 /// Automatically skips chance nodes.
 fn navigate_indexed_tree(tree: &IndexedActionTree, path: &str) -> Result<usize, String> {

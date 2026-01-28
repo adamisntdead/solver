@@ -12,7 +12,10 @@ import init, {
     create_solver,
     run_iterations,
     get_node_strategy,
-    get_exploitability
+    get_exploitability,
+    get_river_cards,
+    is_node_below_chance,
+    get_node_strategy_for_context
 } from '../pkg/solver_wasm.js';
 
 import * as TreeView from './tree-view.js';
@@ -29,6 +32,10 @@ let solverActive = false;
 let solverRunning = false;
 let solverStopped = false;
 let solverTotalIterations = 0;
+
+// River card selector state
+let selectedRiverCardContext = -1; // -1 = average, 0+ = specific card index
+let riverCardInfo = null;          // result from get_river_cards()
 
 // === DOM Elements ===
 const el = {
@@ -112,7 +119,11 @@ const el = {
     strategyAggregate: document.getElementById('strategy-aggregate'),
     strategyLegend: document.getElementById('strategy-legend'),
     strategyThead: document.getElementById('strategy-thead'),
-    strategyTbody: document.getElementById('strategy-tbody')
+    strategyTbody: document.getElementById('strategy-tbody'),
+
+    // River card selector
+    riverCardSelector: document.getElementById('river-card-selector'),
+    riverCardGrid: document.getElementById('river-card-grid')
 };
 
 // === Initialize ===
@@ -320,6 +331,8 @@ async function buildTree() {
         treeBuilt = true;
         currentPath = '';
         solverActive = false;
+        selectedRiverCardContext = -1;
+        riverCardInfo = null;
         el.strategySection.style.display = 'none';
         el.solveBtn.disabled = false;
 
@@ -859,6 +872,10 @@ async function startSolve() {
         solverRunning = true;
         solverStopped = false;
         solverTotalIterations = 0;
+        selectedRiverCardContext = -1;
+
+        // Fetch river card info for turn trees
+        fetchRiverCards();
 
         setStatus(`Solver created: ${createResult.num_oop_hands} OOP hands, ${createResult.num_ip_hands} IP hands`);
 
@@ -919,6 +936,66 @@ function resetSolverUI() {
     el.stopSolveBtn.style.display = 'none';
 }
 
+function fetchRiverCards() {
+    try {
+        riverCardInfo = get_river_cards();
+    } catch (e) {
+        riverCardInfo = null;
+    }
+}
+
+function getSuitClass(card) {
+    if (card.length < 2) return '';
+    const suit = card[card.length - 1];
+    switch (suit) {
+        case 'h': return 'suit-h';
+        case 'd': return 'suit-d';
+        case 'c': return 'suit-c';
+        case 's': return 'suit-s';
+        default: return '';
+    }
+}
+
+function renderRiverCardSelector() {
+    if (!riverCardInfo || !riverCardInfo.has_river_cards) {
+        el.riverCardSelector.style.display = 'none';
+        return;
+    }
+
+    el.riverCardSelector.style.display = 'block';
+    el.riverCardGrid.innerHTML = '';
+
+    // "Avg" button
+    const avgBtn = document.createElement('button');
+    avgBtn.className = 'river-card-btn' + (selectedRiverCardContext === -1 ? ' selected' : '');
+    avgBtn.textContent = 'Avg';
+    avgBtn.addEventListener('click', () => {
+        selectedRiverCardContext = -1;
+        renderRiverCardSelector();
+        if (currentNodeState && currentNodeState.node_type !== 'terminal') {
+            displayNodeStrategy(currentPath, currentNodeState.player_to_act);
+        }
+    });
+    el.riverCardGrid.appendChild(avgBtn);
+
+    // Per-card buttons
+    for (let i = 0; i < riverCardInfo.cards.length; i++) {
+        const card = riverCardInfo.cards[i];
+        const btn = document.createElement('button');
+        const suitCls = getSuitClass(card);
+        btn.className = 'river-card-btn ' + suitCls + (selectedRiverCardContext === i ? ' selected' : '');
+        btn.textContent = card;
+        btn.addEventListener('click', () => {
+            selectedRiverCardContext = i;
+            renderRiverCardSelector();
+            if (currentNodeState && currentNodeState.node_type !== 'terminal') {
+                displayNodeStrategy(currentPath, currentNodeState.player_to_act);
+            }
+        });
+        el.riverCardGrid.appendChild(btn);
+    }
+}
+
 function displayNodeStrategy(path, player) {
     if (!solverActive) {
         el.strategySection.style.display = 'none';
@@ -926,7 +1003,25 @@ function displayNodeStrategy(path, player) {
     }
 
     try {
-        const result = get_node_strategy(path, player);
+        // Check if this node is below a chance node (river betting in turn tree)
+        const belowChance = is_node_below_chance(path);
+
+        // Show/hide river card selector
+        if (belowChance && riverCardInfo && riverCardInfo.has_river_cards) {
+            renderRiverCardSelector();
+        } else {
+            el.riverCardSelector.style.display = 'none';
+            // Reset to avg when navigating to turn-level nodes
+            if (!belowChance) {
+                selectedRiverCardContext = -1;
+            }
+        }
+
+        // Use context-aware function when river cards exist
+        const result = (riverCardInfo && riverCardInfo.has_river_cards)
+            ? get_node_strategy_for_context(path, player, belowChance ? selectedRiverCardContext : -1)
+            : get_node_strategy(path, player);
+
         if (!result.success || result.action_names.length === 0) {
             el.strategySection.style.display = 'none';
             return;
