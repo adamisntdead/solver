@@ -366,9 +366,10 @@ impl BettingState {
         self.players_acted += 1;
 
         if let Some(next) = next_actor(self.current_actor, self.num_players, self.active_mask) {
-            // Check if we've returned to the last aggressor
+            // Check if we've returned to the last aggressor AND everyone has acted
+            // (Preflop, BB is the "aggressor" but hasn't actually acted - they have the "option")
             if let Some(agg) = self.last_aggressor {
-                if next == agg {
+                if next == agg && self.players_acted >= self.active_count() as u8 {
                     self.round_complete = true;
                     return;
                 }
@@ -556,5 +557,45 @@ mod tests {
         assert!(actions.contains(&Action::Call(2)));
         assert!(actions.iter().any(|a| matches!(a, Action::Raise(_))));
         assert!(actions.iter().any(|a| matches!(a, Action::AllIn(_))));
+    }
+
+    #[test]
+    fn test_bb_min_raise_after_sb_call() {
+        let config = TreeConfig::new(2)
+            .with_stack(100)
+            .with_preflop(PreflopConfig::new(1, 2));
+
+        let mut state = BettingState::new(&config);
+
+        // Initial: SB acts first, min raise is 4 (current_bet 2 + last_raise 2)
+        assert_eq!(state.current_actor, 0); // SB/BTN
+        assert_eq!(state.min_raise(), 4);
+
+        // SB calls to 2
+        state.apply_action(Action::Call(2));
+
+        // Now BB acts
+        assert_eq!(state.current_actor, 1); // BB
+        assert_eq!(state.bets, vec![2, 2]);
+        assert_eq!(state.last_raise_size, 2); // Unchanged from initial
+
+        // BB's min raise should still be 4 (2 + 2), NOT 3
+        assert_eq!(state.min_raise(), 4);
+
+        // Legal actions for BB
+        let actions = state.legal_actions(&config);
+
+        // BB can check (bets are equal)
+        assert!(actions.contains(&Action::Check));
+
+        // Any raise must be at least to 4
+        for action in &actions {
+            if let Action::Raise(amount) = action {
+                assert!(*amount >= 4, "Raise to {} is below min raise of 4", amount);
+            }
+            if let Action::Bet(amount) = action {
+                assert!(*amount >= 4, "Bet of {} is below min raise of 4", amount);
+            }
+        }
     }
 }
