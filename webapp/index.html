@@ -140,7 +140,10 @@
 
                 <section class="config-section" id="solver-section">
                     <h2>Solver</h2>
-                    <div class="form-group">
+                    <div class="solver-unsupported" id="solver-unsupported" style="display:none">
+                        Solver requires Turn or River starting street.
+                    </div>
+                    <div class="form-group" id="solver-board-group">
                         <label for="solver-board">Board</label>
                         <input type="text" id="solver-board" placeholder="e.g. KhQsJs2c3d" spellcheck="false">
                     </div>

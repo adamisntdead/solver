@@ -103,6 +103,9 @@ const el = {
     statusBar: document.getElementById('status-bar'),
 
     // Solver
+    solverSection: document.getElementById('solver-section'),
+    solverUnsupported: document.getElementById('solver-unsupported'),
+    solverBoardGroup: document.getElementById('solver-board-group'),
     solverBoard: document.getElementById('solver-board'),
     solverOopRange: document.getElementById('solver-oop-range'),
     solverIpRange: document.getElementById('solver-ip-range'),
@@ -209,6 +212,23 @@ function handleStreetChange() {
 
     // Show/hide preflop options (blinds)
     el.preflopOptions.style.display = isPostflop ? 'none' : 'flex';
+
+    // Solver only supports turn and river
+    updateSolverAvailability(street);
+}
+
+function updateSolverAvailability(street) {
+    const canSolve = street === 'turn' || street === 'river';
+    el.solverUnsupported.style.display = canSolve ? 'none' : 'block';
+    el.solverBoardGroup.style.display = canSolve ? '' : 'none';
+    el.solveBtn.disabled = !canSolve || !treeBuilt;
+
+    // Update board placeholder for the street
+    if (street === 'turn') {
+        el.solverBoard.placeholder = 'e.g. KhQsJs2c';
+    } else {
+        el.solverBoard.placeholder = 'e.g. KhQsJs2c3d';
+    }
 }
 
 // === Stack Management ===
@@ -334,7 +354,7 @@ async function buildTree() {
         selectedRiverCardContext = -1;
         riverCardInfo = null;
         el.strategySection.style.display = 'none';
-        el.solveBtn.disabled = false;
+        updateSolverAvailability(el.startingStreet.value);
 
         // Load tree view
         await loadTreeView();
