@@ -152,9 +152,10 @@ fn main() {
     println!();
 
     let game = RpsGame;
-    let mut solver = CfrSolver::new_with_defaults(&game);
+    // Use Linear CFR for symmetric convergence with alternating updates
+    let mut solver = CfrSolver::new(&game, solver::CfrVariant::LinearCfr);
 
-    let iterations = 10_000;
+    let iterations = 100_000;
     println!("Training for {} iterations...", iterations);
     solver.train(&game, iterations);
     println!("Exploitability: {:.6}", solver.exploitability(&game));

@@ -307,9 +307,9 @@ fn main() {
     println!();
 
     let full_game = Kuhn13Game::new(IdentityAbstraction::new(NUM_CARDS as usize + 1));
-    let mut full_solver = CfrSolver::new_with_defaults(&full_game);
+    let mut full_solver = CfrSolver::new(&full_game, solver::CfrVariant::CfrPlus);
 
-    let iterations = 10_000;
+    let iterations = 100_000; // CFR+ converges well with alternating updates
 
     let start = std::time::Instant::now();
     full_solver.train(&full_game, iterations);
@@ -347,7 +347,7 @@ fn main() {
     println!();
 
     let abstracted_game = Kuhn13Game::new(StrengthBuckets::new(3, NUM_CARDS as usize));
-    let mut abstracted_solver = CfrSolver::new_with_defaults(&abstracted_game);
+    let mut abstracted_solver = CfrSolver::new(&abstracted_game, solver::CfrVariant::CfrPlus);
 
     let start = std::time::Instant::now();
     abstracted_solver.train(&abstracted_game, iterations);
