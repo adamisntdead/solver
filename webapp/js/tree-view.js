@@ -269,8 +269,27 @@ function formatActionLabel(node) {
         return `${players}-WAY, ${node.street || 'PREFLOP'}`;
     }
 
-    // Terminal nodes
+    // Terminal nodes - use label which includes "Action -> Result"
     if (node.node_type === 'terminal') {
+        const label = node.label || '';
+        // Format: "Fold -> BB wins" -> "FOLD → BB wins"
+        if (label.toLowerCase().includes('fold')) {
+            return `FOLD → ${node.terminal_result || 'wins'}`;
+        }
+        if (label.toLowerCase().includes('call')) {
+            const match = label.match(/call\s*(\d+)/i);
+            const amt = match ? match[1] : '';
+            return `CALL ${amt} → ${node.terminal_result || 'Showdown'}`;
+        }
+        if (label.toLowerCase().includes('check')) {
+            return `CHECK → ${node.terminal_result || 'Showdown'}`;
+        }
+        if (label.toLowerCase().includes('all-in')) {
+            const match = label.match(/all-in\s*(\d+)/i);
+            const amt = match ? match[1] : '';
+            return `ALL-IN ${amt} → ${node.terminal_result || 'Showdown'}`;
+        }
+        // Fallback to terminal result
         return node.terminal_result || 'Terminal';
     }
 

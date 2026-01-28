@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use solver::tree::bet_size::parse_bet_size;
 use solver::{
     ActionTree, BetSizeOptions, BetType, MemoryEstimate, PreflopConfig,
-    StreetConfig, TreeConfig, TreeStats,
+    Street, StreetConfig, TreeConfig, TreeStats,
 };
 use wasm_bindgen::prelude::*;
 
@@ -26,8 +26,17 @@ pub struct SpotConfig {
     /// Number of players (2-6)
     pub num_players: usize,
 
-    /// Starting stacks in chips
+    /// Starting stacks in chips (per player, or single value for all)
     pub starting_stacks: Vec<i32>,
+
+    /// Starting street: "preflop", "flop", "turn", or "river"
+    /// If not specified, uses preflop if preflop config exists, else first configured street
+    #[serde(default)]
+    pub starting_street: Option<String>,
+
+    /// Starting pot for postflop trees (ignored for preflop start)
+    #[serde(default = "default_starting_pot")]
+    pub starting_pot: i32,
 
     /// Betting type: "NoLimit" or "PotLimit"
     #[serde(default)]
@@ -73,6 +82,9 @@ fn default_merge() -> f64 {
 }
 fn default_add_all_in() -> f64 {
     1.5
+}
+fn default_starting_pot() -> i32 {
+    0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -353,6 +365,8 @@ pub fn get_default_config() -> String {
         name: "HU 100bb".to_string(),
         num_players: 2,
         starting_stacks: vec![200],
+        starting_street: None, // None means auto-detect (preflop if config exists)
+        starting_pot: 0,       // Ignored for preflop start
         bet_type: "NoLimit".to_string(),
         preflop: Some(PreflopJsonConfig {
             blinds: [1, 2],
@@ -409,9 +423,22 @@ fn convert_config(spot: &SpotConfig) -> Result<TreeConfig, String> {
         _ => BetType::NoLimit,
     };
 
+    // Parse starting street if provided
+    let starting_street = spot.starting_street.as_ref().map(|s| {
+        match s.to_lowercase().as_str() {
+            "preflop" | "pre" => Street::Preflop,
+            "flop" => Street::Flop,
+            "turn" => Street::Turn,
+            "river" => Street::River,
+            _ => Street::Preflop,
+        }
+    });
+
     let mut config = TreeConfig {
         num_players: spot.num_players,
         starting_stacks: spot.starting_stacks.clone(),
+        starting_street,
+        starting_pot: spot.starting_pot,
         bet_type,
         preflop: None,
         flop: None,

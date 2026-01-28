@@ -172,27 +172,44 @@ impl<'a> TreeBuilder<'a> {
     }
 
     fn build(&mut self) -> ActionTreeNode {
-        // Determine initial street and state
-        let state = if self.config.preflop.is_some() {
-            // Start from preflop
+        // Determine starting street
+        let starting_street = self.config.starting_street.unwrap_or_else(|| {
+            // Auto-detect: preflop if configured, else first postflop street
+            if self.config.preflop.is_some() {
+                Street::Preflop
+            } else if self.config.flop.is_some() {
+                Street::Flop
+            } else if self.config.turn.is_some() {
+                Street::Turn
+            } else if self.config.river.is_some() {
+                Street::River
+            } else {
+                Street::Preflop // Fallback
+            }
+        });
+
+        // Create initial state based on starting street
+        let state = if starting_street == Street::Preflop && self.config.preflop.is_some() {
             BettingState::new(self.config)
         } else {
-            // Postflop-only tree - find first configured street
-            let (street, initial_pot) = if self.config.flop.is_some() {
-                (Street::Flop, 100) // Default starting pot for postflop
-            } else if self.config.turn.is_some() {
-                (Street::Turn, 100)
-            } else if self.config.river.is_some() {
-                (Street::River, 100)
+            // Postflop start
+            let initial_pot = if self.config.starting_pot > 0 {
+                self.config.starting_pot
             } else {
-                // No streets configured
-                return ActionTreeNode::Terminal {
-                    result: TerminalResult::Showdown,
-                    pot: 0,
-                };
+                // Default: 2/3 of effective stack as pot (typical postflop spot)
+                (self.config.effective_stack() * 2 / 3).max(1)
             };
-            BettingState::new_postflop(self.config, street, initial_pot)
+            BettingState::new_postflop(self.config, starting_street, initial_pot)
         };
+
+        // Make sure the starting street config exists
+        if starting_street != Street::Preflop && self.config.street_config(starting_street).is_none() {
+            return ActionTreeNode::Terminal {
+                result: TerminalResult::Showdown,
+                pot: 0,
+            };
+        }
+
         self.build_recursive(state)
     }
 
@@ -428,9 +445,14 @@ impl<'a> TreeBuilder<'a> {
             amounts.push(clamped);
         }
 
-        // Always include min raise and all-in as options
-        amounts.push(min_raise);
+        // Always include all-in as an option
         amounts.push(all_in);
+
+        // Only add min_raise if no other bet sizes were configured
+        // (avoids adding useless "bet 1" for postflop spots)
+        if amounts.len() <= 1 {
+            amounts.push(min_raise);
+        }
 
         amounts.sort();
         amounts.dedup();
@@ -450,7 +472,7 @@ impl<'a> TreeBuilder<'a> {
                         0 => pf
                             .open_sizes
                             .first()
-                            .map(|s| s.bet.clone())
+                            .map(|s| s.raise.clone())  // Open raise uses raise sizes
                             .unwrap_or_default(),
                         1 => pf
                             .three_bet_sizes

@@ -235,6 +235,13 @@ pub struct TreeConfig {
     /// If a single value, all players start with the same stack.
     pub starting_stacks: Vec<i32>,
 
+    /// Starting street for the tree. If None, starts at preflop if configured,
+    /// otherwise the first configured postflop street.
+    pub starting_street: Option<Street>,
+
+    /// Starting pot for postflop trees. Ignored when starting from preflop.
+    pub starting_pot: i32,
+
     // === Betting Structure ===
     /// Betting type (NoLimit or PotLimit).
     pub bet_type: BetType,
@@ -274,6 +281,8 @@ impl Default for TreeConfig {
         Self {
             num_players: 2,
             starting_stacks: vec![100],
+            starting_street: None,
+            starting_pot: 0,
             bet_type: BetType::NoLimit,
             preflop: None,
             flop: None,
@@ -305,6 +314,18 @@ impl TreeConfig {
     /// Set starting stacks per player.
     pub fn with_stacks(mut self, stacks: Vec<i32>) -> Self {
         self.starting_stacks = stacks;
+        self
+    }
+
+    /// Set starting street (for postflop trees).
+    pub fn with_starting_street(mut self, street: Street) -> Self {
+        self.starting_street = Some(street);
+        self
+    }
+
+    /// Set starting pot (for postflop trees).
+    pub fn with_starting_pot(mut self, pot: i32) -> Self {
+        self.starting_pot = pot;
         self
     }
 

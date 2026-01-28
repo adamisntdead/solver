@@ -147,18 +147,42 @@ fn navigate_to_path(tree: &ActionTree, spot_config: &SpotConfig, path: &str) -> 
     let mut action_history = Vec::new();
     let mut current_path = String::new();
 
+    // Determine starting street
+    let starting_street = tree.config.starting_street.unwrap_or_else(|| {
+        if tree.config.preflop.is_some() {
+            Street::Preflop
+        } else if tree.config.flop.is_some() {
+            Street::Flop
+        } else if tree.config.turn.is_some() {
+            Street::Turn
+        } else {
+            Street::River
+        }
+    });
+
     // Initial state
-    let mut pot = tree.config.starting_pot();
+    let mut pot = if starting_street == Street::Preflop {
+        tree.config.starting_pot()
+    } else {
+        // For postflop trees, use the configured starting pot
+        if tree.config.starting_pot > 0 {
+            tree.config.starting_pot
+        } else {
+            tree.config.starting_pot()
+        }
+    };
     let mut stacks: Vec<i32> = (0..num_players)
         .map(|i| tree.config.stack_for_player(i))
         .collect();
-    let mut street = Street::Preflop;
+    let mut street = starting_street;
 
-    // Deduct blinds from stacks
-    if let Some(ref pf) = tree.config.preflop {
-        let (sb_seat, bb_seat) = solver::tree::position::blind_seats(num_players);
-        stacks[sb_seat] -= pf.blinds[0];
-        stacks[bb_seat] -= pf.blinds[1];
+    // Deduct blinds from stacks (only for preflop start)
+    if starting_street == Street::Preflop {
+        if let Some(ref pf) = tree.config.preflop {
+            let (sb_seat, bb_seat) = solver::tree::position::blind_seats(num_players);
+            stacks[sb_seat] -= pf.blinds[0];
+            stacks[bb_seat] -= pf.blinds[1];
+        }
     }
 
     // Navigate through path
@@ -454,8 +478,21 @@ pub fn get_tree_children_internal(config_json: &str, path: &str) -> Vec<TreeNode
 
     let positions = Position::all_for_players(spot_config.num_players);
 
+    // Determine starting street
+    let starting_street = tree.config.starting_street.unwrap_or_else(|| {
+        if tree.config.preflop.is_some() {
+            Street::Preflop
+        } else if tree.config.flop.is_some() {
+            Street::Flop
+        } else if tree.config.turn.is_some() {
+            Street::Turn
+        } else {
+            Street::River
+        }
+    });
+
     // Navigate to the node
-    let node = navigate_to_node(&tree.root, path);
+    let node = navigate_to_node(&tree.root, path, starting_street);
     let (node, street) = match node {
         Some((n, s)) => (n, s),
         None => return vec![],
@@ -465,9 +502,9 @@ pub fn get_tree_children_internal(config_json: &str, path: &str) -> Vec<TreeNode
     get_children_info(node, path, positions, street)
 }
 
-fn navigate_to_node<'a>(root: &'a ActionTreeNode, path: &str) -> Option<(&'a ActionTreeNode, Street)> {
+fn navigate_to_node<'a>(root: &'a ActionTreeNode, path: &str, starting_street: Street) -> Option<(&'a ActionTreeNode, Street)> {
     if path.is_empty() {
-        return Some((root, Street::Preflop));
+        return Some((root, starting_street));
     }
 
     let indices: Vec<usize> = path
@@ -477,7 +514,7 @@ fn navigate_to_node<'a>(root: &'a ActionTreeNode, path: &str) -> Option<(&'a Act
         .ok()?;
 
     let mut current = root;
-    let mut street = Street::Preflop;
+    let mut street = starting_street;
 
     for &idx in &indices {
         match current {

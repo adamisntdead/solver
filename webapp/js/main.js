@@ -25,7 +25,12 @@ const el = {
     // Config
     spotName: document.getElementById('spot-name'),
     numPlayers: document.getElementById('num-players'),
-    stackSize: document.getElementById('stack-size'),
+    startingStreet: document.getElementById('starting-street'),
+    startingPot: document.getElementById('starting-pot'),
+    postflopOptions: document.getElementById('postflop-options'),
+    preflopOptions: document.getElementById('preflop-options'),
+    stacksContainer: document.getElementById('stacks-container'),
+    perPlayerStacks: document.getElementById('per-player-stacks'),
     sbSize: document.getElementById('sb-size'),
     bbSize: document.getElementById('bb-size'),
     betType: document.getElementById('bet-type'),
@@ -122,6 +127,15 @@ function setupEventListeners() {
     el.loadBtn.addEventListener('click', () => el.loadInput.click());
     el.loadInput.addEventListener('change', loadConfig);
 
+    // Street selection
+    el.startingStreet.addEventListener('change', handleStreetChange);
+
+    // Player count change
+    el.numPlayers.addEventListener('change', handlePlayerCountChange);
+
+    // Per-player stacks toggle
+    el.perPlayerStacks.addEventListener('change', handleStackModeChange);
+
     // Tree controls
     el.expandAllBtn.addEventListener('click', handleExpandAll);
     el.collapseAllBtn.addEventListener('click', handleCollapseAll);
@@ -139,6 +153,87 @@ function setupEventListeners() {
 
     // Keyboard shortcuts
     document.addEventListener('keydown', handleGlobalKeyDown);
+}
+
+// === Street Selection ===
+function handleStreetChange() {
+    const street = el.startingStreet.value;
+    const isPostflop = street !== 'preflop';
+
+    // Show/hide postflop options (starting pot)
+    el.postflopOptions.style.display = isPostflop ? 'flex' : 'none';
+
+    // Show/hide preflop options (blinds)
+    el.preflopOptions.style.display = isPostflop ? 'none' : 'flex';
+}
+
+// === Stack Management ===
+function handlePlayerCountChange() {
+    const numPlayers = parseInt(el.numPlayers.value);
+    if (el.perPlayerStacks.checked) {
+        rebuildStackInputs(numPlayers);
+    }
+}
+
+function handleStackModeChange() {
+    const numPlayers = parseInt(el.numPlayers.value);
+    if (el.perPlayerStacks.checked) {
+        rebuildStackInputs(numPlayers);
+    } else {
+        rebuildStackInputs(1); // Single "All" input
+    }
+}
+
+function rebuildStackInputs(count) {
+    const currentStack = getFirstStackValue();
+    const positions = getPositionNames(parseInt(el.numPlayers.value));
+
+    el.stacksContainer.innerHTML = '';
+
+    if (count === 1) {
+        // Single input for all players
+        const row = document.createElement('div');
+        row.className = 'stack-input-row';
+        row.innerHTML = `
+            <span class="player-label">All</span>
+            <input type="number" class="stack-input" data-player="all" value="${currentStack}" min="1">
+        `;
+        el.stacksContainer.appendChild(row);
+    } else {
+        // Per-player inputs
+        for (let i = 0; i < count; i++) {
+            const row = document.createElement('div');
+            row.className = 'stack-input-row';
+            row.innerHTML = `
+                <span class="player-label">${positions[i] || `P${i+1}`}</span>
+                <input type="number" class="stack-input" data-player="${i}" value="${currentStack}" min="1">
+            `;
+            el.stacksContainer.appendChild(row);
+        }
+    }
+}
+
+function getFirstStackValue() {
+    const input = el.stacksContainer.querySelector('.stack-input');
+    return parseInt(input?.value) || 200;
+}
+
+function getPositionNames(numPlayers) {
+    if (numPlayers === 2) return ['BTN', 'BB'];
+    if (numPlayers === 3) return ['BTN', 'SB', 'BB'];
+    if (numPlayers === 4) return ['CO', 'BTN', 'SB', 'BB'];
+    if (numPlayers === 5) return ['MP', 'CO', 'BTN', 'SB', 'BB'];
+    if (numPlayers === 6) return ['UTG', 'MP', 'CO', 'BTN', 'SB', 'BB'];
+    return Array.from({ length: numPlayers }, (_, i) => `P${i+1}`);
+}
+
+function getStacksFromUI() {
+    const inputs = el.stacksContainer.querySelectorAll('.stack-input');
+    const stacks = [];
+    inputs.forEach(input => {
+        stacks.push(parseInt(input.value) || 100);
+    });
+    return stacks;
 }
 
 function handleGlobalKeyDown(e) {
@@ -210,14 +305,28 @@ async function buildTree() {
 function collectConfigFromUI() {
     const sb = parseInt(el.sbSize.value) || 1;
     const bb = parseInt(el.bbSize.value) || 2;
-    const stack = parseInt(el.stackSize.value) || 100;
+    const startingStreet = el.startingStreet.value;
+    const isPreflop = startingStreet === 'preflop';
 
-    return {
+    // Get stacks directly in chips (no BB conversion)
+    const stacks = getStacksFromUI();
+
+    const config = {
         name: el.spotName.value,
         num_players: parseInt(el.numPlayers.value),
-        starting_stacks: [stack * bb],
+        starting_stacks: stacks,
+        starting_street: startingStreet,
+        starting_pot: isPreflop ? 0 : parseInt(el.startingPot.value) || 100,
         bet_type: el.betType.value,
-        preflop: {
+        max_raises_per_round: parseInt(el.maxRaises.value) || 4,
+        force_all_in_threshold: 0.15,
+        merge_threshold: 0.1,
+        add_all_in_threshold: 1.5
+    };
+
+    // Only include preflop config if starting from preflop
+    if (isPreflop) {
+        config.preflop = {
             blinds: [sb, bb],
             ante: 0,
             bb_ante: 0,
@@ -234,43 +343,64 @@ function collectConfigFromUI() {
                 raise: '2.2x, a'
             },
             allow_limps: true
-        },
-        flop: {
-            sizes: {
-                bet: el.postflopBet.value,
-                raise: el.postflopRaise.value
-            }
-        },
-        turn: {
-            sizes: {
-                bet: el.postflopBet.value,
-                raise: el.postflopRaise.value
-            }
-        },
-        river: {
-            sizes: {
-                bet: el.postflopBet.value,
-                raise: el.postflopRaise.value
-            }
-        },
-        max_raises_per_round: parseInt(el.maxRaises.value) || 4,
-        force_all_in_threshold: 0.15,
-        merge_threshold: 0.1,
-        add_all_in_threshold: 1.5
+        };
+    }
+
+    // Include postflop configs based on starting street
+    const postflopConfig = {
+        sizes: {
+            bet: el.postflopBet.value,
+            raise: el.postflopRaise.value
+        }
     };
+
+    // Include streets from starting street onwards
+    const streets = ['preflop', 'flop', 'turn', 'river'];
+    const startIdx = streets.indexOf(startingStreet);
+
+    if (startIdx <= 1) config.flop = postflopConfig;
+    if (startIdx <= 2) config.turn = { ...postflopConfig };
+    if (startIdx <= 3) config.river = { ...postflopConfig };
+
+    return config;
 }
 
 function loadConfigToUI(config) {
     el.spotName.value = config.name || 'HU 100bb';
     el.numPlayers.value = config.num_players || 2;
 
-    const bb = config.preflop?.blinds?.[1] || 2;
-    const stack = config.starting_stacks?.[0] || 200;
-    el.stackSize.value = Math.round(stack / bb);
+    // Starting street
+    const startingStreet = config.starting_street || 'preflop';
+    el.startingStreet.value = startingStreet;
+    handleStreetChange(); // Update UI visibility
+
+    // Starting pot (for postflop)
+    el.startingPot.value = config.starting_pot || 100;
+
+    // Blinds
+    el.sbSize.value = config.preflop?.blinds?.[0] || 1;
+    el.bbSize.value = config.preflop?.blinds?.[1] || 2;
+
+    // Stacks (directly in chips, no BB conversion)
+    const stacks = config.starting_stacks || [200];
+
+    if (stacks.length > 1) {
+        // Per-player stacks
+        el.perPlayerStacks.checked = true;
+        rebuildStackInputs(stacks.length);
+        const inputs = el.stacksContainer.querySelectorAll('.stack-input');
+        inputs.forEach((input, i) => {
+            input.value = stacks[i] || stacks[0];
+        });
+    } else {
+        // Single stack for all
+        el.perPlayerStacks.checked = false;
+        rebuildStackInputs(1);
+        const input = el.stacksContainer.querySelector('.stack-input');
+        if (input) input.value = stacks[0] || 200;
+    }
 
     el.betType.value = config.bet_type || 'NoLimit';
-    el.sbSize.value = config.preflop?.blinds?.[0] || 1;
-    el.bbSize.value = bb;
     el.maxRaises.value = config.max_raises_per_round || 4;
 
     el.preflopOpenRaise.value = config.preflop?.open_sizes?.raise || '2.5x, 3x';

@@ -334,6 +334,65 @@ body {
     flex: 1;
 }
 
+/* === Stacks Container === */
+.stacks-container {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.stack-input-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.stack-input-row .player-label {
+    width: 40px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.stack-input-row .stack-input {
+    flex: 1;
+    padding: 6px 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-family: var(--font-mono);
+}
+
+.stack-input-row .stack-input:focus {
+    outline: none;
+    border-color: var(--accent-primary);
+}
+
+.stacks-mode {
+    margin-top: 6px;
+}
+
+.stacks-mode label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.stacks-mode input[type="checkbox"] {
+    width: auto;
+}
+
+/* === Street-specific Options === */
+.postflop-options,
+.preflop-options {
+    transition: opacity 0.2s;
+}
+
 /* === Buttons === */
 .btn {
     padding: 7px 14px;

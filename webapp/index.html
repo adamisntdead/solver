@@ -39,11 +39,34 @@
                             </select>
                         </div>
                         <div class="form-group">
-                            <label for="stack-size">Stack (BB)</label>
-                            <input type="number" id="stack-size" value="100" min="1">
+                            <label for="starting-street">Start</label>
+                            <select id="starting-street">
+                                <option value="preflop" selected>Preflop</option>
+                                <option value="flop">Flop</option>
+                                <option value="turn">Turn</option>
+                                <option value="river">River</option>
+                            </select>
                         </div>
                     </div>
-                    <div class="form-row">
+                    <div class="form-row postflop-options" id="postflop-options" style="display: none;">
+                        <div class="form-group">
+                            <label for="starting-pot">Start Pot</label>
+                            <input type="number" id="starting-pot" value="100" min="1">
+                        </div>
+                    </div>
+                    <div class="form-group" id="stacks-section">
+                        <label>Stacks (chips)</label>
+                        <div class="stacks-container" id="stacks-container">
+                            <div class="stack-input-row">
+                                <span class="player-label">All</span>
+                                <input type="number" class="stack-input" data-player="all" value="200" min="1">
+                            </div>
+                        </div>
+                        <div class="stacks-mode">
+                            <label><input type="checkbox" id="per-player-stacks"> Per-player stacks</label>
+                        </div>
+                    </div>
+                    <div class="form-row preflop-options" id="preflop-options">
                         <div class="form-group">
                             <label for="sb-size">SB</label>
                             <input type="number" id="sb-size" value="1" min="1">
