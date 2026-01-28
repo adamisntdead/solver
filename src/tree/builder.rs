@@ -161,6 +161,194 @@ pub struct TreeStats {
     pub player_node_count: usize,
 }
 
+/// Node type for indexed tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexedNodeType {
+    /// Player decision node.
+    Player { player: usize },
+    /// Chance node (card dealt).
+    Chance,
+    /// Terminal: fold (winner gets pot).
+    TerminalFold { winner: usize },
+    /// Terminal: showdown.
+    TerminalShowdown,
+    /// Terminal: all-in runout.
+    TerminalAllIn { num_players: usize },
+}
+
+/// A node in the indexed (flattened) action tree.
+#[derive(Debug, Clone)]
+pub struct IndexedNode {
+    /// Node type.
+    pub node_type: IndexedNodeType,
+    /// Actions available (empty for terminal/chance).
+    pub actions: Vec<Action>,
+    /// Child node indices (one per action, or one for chance).
+    pub children: Vec<usize>,
+    /// Current pot size.
+    pub pot: i32,
+}
+
+impl IndexedNode {
+    /// Check if this is a terminal node.
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self.node_type,
+            IndexedNodeType::TerminalFold { .. }
+                | IndexedNodeType::TerminalShowdown
+                | IndexedNodeType::TerminalAllIn { .. }
+        )
+    }
+
+    /// Check if this is a chance node.
+    pub fn is_chance(&self) -> bool {
+        matches!(self.node_type, IndexedNodeType::Chance)
+    }
+
+    /// Check if this is a player node.
+    pub fn is_player(&self) -> bool {
+        matches!(self.node_type, IndexedNodeType::Player { .. })
+    }
+
+    /// Get the player to act (panics if not a player node).
+    pub fn player(&self) -> usize {
+        match self.node_type {
+            IndexedNodeType::Player { player } => player,
+            _ => panic!("Not a player node"),
+        }
+    }
+}
+
+/// Flattened action tree for O(1) node access.
+///
+/// The recursive ActionTreeNode is converted to a flat vector
+/// where each node has indices to its children.
+#[derive(Debug)]
+pub struct IndexedActionTree {
+    /// All nodes in the tree.
+    pub nodes: Vec<IndexedNode>,
+    /// Index of the root node (always 0).
+    pub root_idx: usize,
+    /// Number of player nodes (for info set counting).
+    pub player_node_count: usize,
+}
+
+impl IndexedActionTree {
+    /// Get the root node.
+    pub fn root(&self) -> &IndexedNode {
+        &self.nodes[self.root_idx]
+    }
+
+    /// Get a node by index.
+    pub fn get(&self, idx: usize) -> &IndexedNode {
+        &self.nodes[idx]
+    }
+
+    /// Get the number of nodes.
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Check if the tree is empty.
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+}
+
+impl ActionTree {
+    /// Convert to an indexed (flattened) tree for efficient traversal.
+    pub fn to_indexed(&self) -> IndexedActionTree {
+        let mut nodes = Vec::with_capacity(self.node_count);
+        let mut player_node_count = 0;
+
+        fn flatten(
+            node: &ActionTreeNode,
+            nodes: &mut Vec<IndexedNode>,
+            player_count: &mut usize,
+        ) -> usize {
+            let idx = nodes.len();
+
+            match node {
+                ActionTreeNode::Terminal { result, pot } => {
+                    let node_type = match result {
+                        TerminalResult::Fold { winner } => {
+                            IndexedNodeType::TerminalFold { winner: *winner }
+                        }
+                        TerminalResult::Showdown => IndexedNodeType::TerminalShowdown,
+                        TerminalResult::AllInRunout { num_players } => {
+                            IndexedNodeType::TerminalAllIn {
+                                num_players: *num_players,
+                            }
+                        }
+                    };
+                    nodes.push(IndexedNode {
+                        node_type,
+                        actions: Vec::new(),
+                        children: Vec::new(),
+                        pot: *pot,
+                    });
+                }
+                ActionTreeNode::Chance { child, .. } => {
+                    // Reserve spot for this node
+                    nodes.push(IndexedNode {
+                        node_type: IndexedNodeType::Chance,
+                        actions: Vec::new(),
+                        children: Vec::new(),
+                        pot: 0,
+                    });
+
+                    let child_idx = flatten(child, nodes, player_count);
+                    nodes[idx].children.push(child_idx);
+                    // Copy pot from child
+                    nodes[idx].pot = nodes[child_idx].pot;
+                }
+                ActionTreeNode::Player {
+                    player,
+                    actions,
+                    children,
+                } => {
+                    *player_count += 1;
+
+                    // Reserve spot for this node
+                    nodes.push(IndexedNode {
+                        node_type: IndexedNodeType::Player { player: *player },
+                        actions: actions.clone(),
+                        children: Vec::new(),
+                        pot: 0,
+                    });
+
+                    let child_indices: Vec<usize> = children
+                        .iter()
+                        .map(|c| flatten(c, nodes, player_count))
+                        .collect();
+
+                    nodes[idx].children = child_indices;
+                    // Pot at this node is the pot before any action
+                    // We'll get it from the first terminal or estimate from structure
+                    if let Some(&first_child) = nodes[idx].children.first() {
+                        // Walk to first terminal to get pot context
+                        let mut current = first_child;
+                        while !nodes[current].is_terminal() && !nodes[current].children.is_empty() {
+                            current = nodes[current].children[0];
+                        }
+                        nodes[idx].pot = nodes[current].pot;
+                    }
+                }
+            }
+
+            idx
+        }
+
+        flatten(&self.root, &mut nodes, &mut player_node_count);
+
+        IndexedActionTree {
+            nodes,
+            root_idx: 0,
+            player_node_count,
+        }
+    }
+}
+
 /// Internal tree builder.
 struct TreeBuilder<'a> {
     config: &'a TreeConfig,

@@ -27,6 +27,13 @@ pub trait GameNode: Clone {
     /// Nodes in the same information set are indistinguishable to the player.
     /// IDs must be in range `0..Game::num_info_sets()`.
     fn info_set_id(&self) -> usize;
+
+    /// Returns the probability of a chance action at a chance node.
+    /// Only valid when `is_chance()` returns `true`.
+    /// Default implementation returns uniform probability (1/num_actions).
+    fn chance_prob(&self, _action: usize) -> f64 {
+        1.0 / self.num_actions() as f64
+    }
 }
 
 /// Trait representing a game (typically two-player zero-sum).

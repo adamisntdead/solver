@@ -17,6 +17,7 @@
 pub mod cfr;
 pub mod game;
 pub mod info_abstraction;
+pub mod poker;
 pub mod tree;
 
 #[cfg(feature = "rand")]
@@ -24,6 +25,7 @@ pub use cfr::{CfrSolver, CfrVariant, DiscountParams};
 pub use game::{Game, GameNode};
 pub use info_abstraction::{IdentityAbstraction, InfoAbstraction};
 pub use tree::{
-    Action, ActionTree, ActionTreeNode, BetSize, BetSizeOptions, BetType, MemoryEstimate,
-    Position, PreflopConfig, Street, StreetConfig, TerminalResult, TreeConfig, TreeStats,
+    Action, ActionTree, ActionTreeNode, BetSize, BetSizeOptions, BetType, IndexedActionTree,
+    IndexedNode, IndexedNodeType, MemoryEstimate, Position, PreflopConfig, Street, StreetConfig,
+    TerminalResult, TreeConfig, TreeStats,
 };

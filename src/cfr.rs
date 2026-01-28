@@ -278,10 +278,13 @@ impl CfrSolver {
         if node.is_chance() {
             let mut expected_value = 0.0;
             for action in 0..num_actions {
+                let prob = node.chance_prob(action);
                 let child = node.play(action);
-                expected_value += self.cfr(&child, player, num_players, reach_probs, strategy_buf);
+                // Expected value is weighted sum of subtree values
+                // Reach probabilities stay the same - chance doesn't affect player reach
+                expected_value += prob * self.cfr(&child, player, num_players, reach_probs, strategy_buf);
             }
-            return expected_value / num_actions as f64;
+            return expected_value;
         }
 
         let current_player = node.current_player();
@@ -327,12 +330,9 @@ impl CfrSolver {
 
             let info_set = &mut self.info_sets[info_id];
 
-            for action in 0..num_actions {
-                let regret = action_values[action] - node_value;
-                info_set.regret_sum[action] += cf_reach * regret;
-            }
-
             // Recompute strategy since buffer may have been overwritten by recursion
+            // IMPORTANT: Do this BEFORE updating regrets so we use the strategy that was
+            // actually played during this iteration, not the post-update strategy
             info_set.current_strategy(&mut strategy_buf[..num_actions]);
 
             // CFR+ uses linear averaging (weight by iteration t)
@@ -344,6 +344,12 @@ impl CfrSolver {
 
             for action in 0..num_actions {
                 info_set.strategy_sum[action] += weight * reach_probs[player] * strategy_buf[action];
+            }
+
+            // Now update regrets (after updating strategy_sum)
+            for action in 0..num_actions {
+                let regret = action_values[action] - node_value;
+                info_set.regret_sum[action] += cf_reach * regret;
             }
         }
 
@@ -367,8 +373,18 @@ impl CfrSolver {
         let num_actions = node.num_actions();
 
         if node.is_chance() {
-            // Sample a single chance outcome instead of enumerating all
-            let action = rng.gen_range(0..num_actions);
+            // Sample a single chance outcome, weighted by probability
+            let r: f64 = rng.r#gen();
+            let mut cumulative = 0.0;
+            let mut action = 0;
+            for a in 0..num_actions {
+                cumulative += node.chance_prob(a);
+                if r < cumulative {
+                    action = a;
+                    break;
+                }
+                action = a; // In case of floating point rounding
+            }
             let child = node.play(action);
             return self.cfr_sampled(&child, player, num_players, reach_probs, strategy_buf, rng);
         }
@@ -417,12 +433,9 @@ impl CfrSolver {
 
             let info_set = &mut self.info_sets[info_id];
 
-            for action in 0..num_actions {
-                let regret = action_values[action] - node_value;
-                info_set.regret_sum[action] += cf_reach * regret;
-            }
-
             // Recompute strategy since buffer may have been overwritten by recursion
+            // IMPORTANT: Do this BEFORE updating regrets so we use the strategy that was
+            // actually played during this iteration, not the post-update strategy
             info_set.current_strategy(&mut strategy_buf[..num_actions]);
 
             // CFR+ uses linear averaging (weight by iteration t)
@@ -434,6 +447,12 @@ impl CfrSolver {
 
             for action in 0..num_actions {
                 info_set.strategy_sum[action] += weight * reach_probs[player] * strategy_buf[action];
+            }
+
+            // Now update regrets (after updating strategy_sum)
+            for action in 0..num_actions {
+                let regret = action_values[action] - node_value;
+                info_set.regret_sum[action] += cf_reach * regret;
             }
         }
 
@@ -504,8 +523,8 @@ impl CfrSolver {
         let num_actions = node.num_actions();
 
         if node.is_chance() {
-            let prob = 1.0 / num_actions as f64;
             for action in 0..num_actions {
+                let prob = node.chance_prob(action);
                 let child = node.play(action);
                 self.compute_br_action_values(
                     &child,
@@ -573,10 +592,11 @@ impl CfrSolver {
         if node.is_chance() {
             let mut expected_value = 0.0;
             for action in 0..num_actions {
+                let prob = node.chance_prob(action);
                 let child = node.play(action);
-                expected_value += self.compute_terminal_value(&child, player, num_players);
+                expected_value += prob * self.compute_terminal_value(&child, player, num_players);
             }
-            return expected_value / num_actions as f64;
+            return expected_value;
         }
 
         let info_id = node.info_set_id();
@@ -612,10 +632,11 @@ impl CfrSolver {
         if node.is_chance() {
             let mut expected_value = 0.0;
             for action in 0..num_actions {
+                let prob = node.chance_prob(action);
                 let child = node.play(action);
-                expected_value += self.compute_br_value(&child, player, num_players, br_strategy);
+                expected_value += prob * self.compute_br_value(&child, player, num_players, br_strategy);
             }
-            return expected_value / num_actions as f64;
+            return expected_value;
         }
 
         let current_player = node.current_player();
