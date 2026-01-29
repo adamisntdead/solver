@@ -840,6 +840,61 @@ body {
     font-family: var(--font-mono);
 }
 
+/* === Turn Card Selector === */
+.turn-card-selector {
+    margin-bottom: 10px;
+}
+
+.turn-card-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+    font-weight: 500;
+}
+
+.turn-card-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+}
+
+.turn-card-btn {
+    min-width: 28px;
+    padding: 3px 5px;
+    border: 1px solid var(--border-color);
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: all 0.1s;
+    text-align: center;
+}
+
+.turn-card-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.turn-card-btn.selected {
+    border-color: var(--accent-primary);
+    background: var(--accent-primary);
+    color: white;
+}
+
+.turn-card-btn.suit-h { color: #ef4444; }
+.turn-card-btn.suit-d { color: #3b82f6; }
+.turn-card-btn.suit-c { color: #22c55e; }
+.turn-card-btn.suit-s { color: var(--text-primary); }
+
+.turn-card-btn.suit-h.selected,
+.turn-card-btn.suit-d.selected,
+.turn-card-btn.suit-c.selected,
+.turn-card-btn.suit-s.selected {
+    color: white;
+}
+
 /* === River Card Selector === */
 .river-card-selector {
     margin-bottom: 10px;

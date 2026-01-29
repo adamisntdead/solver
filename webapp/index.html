@@ -141,7 +141,7 @@
                 <section class="config-section" id="solver-section">
                     <h2>Solver</h2>
                     <div class="solver-unsupported" id="solver-unsupported" style="display:none">
-                        Solver requires Turn or River starting street.
+                        Solver requires Flop, Turn, or River starting street.
                     </div>
                     <div class="form-group" id="solver-board-group">
                         <label for="solver-board">Board</label>
@@ -271,6 +271,10 @@
 
                 <section class="inspector-section" id="strategy-section" style="display:none">
                     <h2>Strategy</h2>
+                    <div class="turn-card-selector" id="turn-card-selector" style="display:none">
+                        <div class="turn-card-label">Turn Card:</div>
+                        <div class="turn-card-grid" id="turn-card-grid"></div>
+                    </div>
                     <div class="river-card-selector" id="river-card-selector" style="display:none">
                         <div class="river-card-label">River Card:</div>
                         <div class="river-card-grid" id="river-card-grid"></div>

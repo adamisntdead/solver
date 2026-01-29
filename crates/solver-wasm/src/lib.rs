@@ -823,6 +823,61 @@ pub fn is_node_below_chance(path: &str) -> bool {
     })
 }
 
+/// Get the chance depth for a node at the given path.
+///
+/// Returns 0 for nodes before any chance node, 1 for nodes after the first
+/// chance node (turn betting in flop trees, river betting in turn trees),
+/// and 2 for nodes after the second chance node (river betting in flop trees).
+#[wasm_bindgen]
+pub fn get_chance_depth(path: &str) -> i32 {
+    SOLVER_STATE.with(|state| {
+        let state = state.borrow();
+        let state = match state.as_ref() {
+            Some(s) => s,
+            None => return 0,
+        };
+
+        let tree = &state.game.tree;
+        let node_idx = match navigate_indexed_tree(tree, path) {
+            Ok(idx) => idx,
+            Err(_) => return 0,
+        };
+
+        state.solver.chance_depth(node_idx) as i32
+    })
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TurnCardsResult {
+    pub has_turn_cards: bool,
+    pub cards: Vec<String>,
+}
+
+/// Get the list of valid turn cards for the current solver.
+///
+/// Returns { has_turn_cards: bool, cards: ["2c", "2d", ...] }.
+/// `has_turn_cards` is true when solving a flop spot (3-card board).
+#[wasm_bindgen]
+pub fn get_turn_cards() -> JsValue {
+    let result = SOLVER_STATE.with(|state| {
+        let state = state.borrow();
+        match state.as_ref() {
+            Some(s) => {
+                let cards = s.solver.turn_card_strings();
+                TurnCardsResult {
+                    has_turn_cards: !cards.is_empty(),
+                    cards,
+                }
+            }
+            None => TurnCardsResult {
+                has_turn_cards: false,
+                cards: vec![],
+            },
+        }
+    });
+    serde_wasm_bindgen::to_value(&result).unwrap()
+}
+
 /// Get the strategy for a specific node with a specific card context.
 ///
 /// `card_context`: -1 for average across all river cards, 0+ for a specific river card index.
@@ -891,8 +946,8 @@ fn get_node_strategy_for_context_internal(
         };
     }
 
-    // Get the river card for this context to filter blocked hands
-    let river_card = state.solver.river_card_at(ctx);
+    // Get the cards for this context to filter blocked hands
+    let (turn_card, river_card) = state.solver.context_cards(node_idx, ctx);
 
     let num_hands = state.solver.num_hands(player);
     let mut hands = Vec::with_capacity(num_hands);
@@ -902,9 +957,14 @@ fn get_node_strategy_for_context_internal(
     for h in 0..num_hands {
         let (combo_idx, weight) = state.solver.hand_info(player, h);
 
-        // Skip hands that conflict with the river card
+        // Skip hands that conflict with dealt cards
+        let (c0, c1) = state.solver.hand_cards(player, h);
+        if let Some(tc) = turn_card {
+            if c0 == tc || c1 == tc {
+                continue;
+            }
+        }
         if let Some(rc) = river_card {
-            let (c0, c1) = state.solver.hand_cards(player, h);
             if c0 == rc || c1 == rc {
                 continue;
             }

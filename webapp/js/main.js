@@ -14,7 +14,9 @@ import init, {
     get_node_strategy,
     get_exploitability,
     get_river_cards,
+    get_turn_cards,
     is_node_below_chance,
+    get_chance_depth,
     get_node_strategy_for_context
 } from '../pkg/solver_wasm.js';
 
@@ -33,9 +35,11 @@ let solverRunning = false;
 let solverStopped = false;
 let solverTotalIterations = 0;
 
-// River card selector state
+// Card selector state
 let selectedRiverCardContext = -1; // -1 = average, 0+ = specific card index
 let riverCardInfo = null;          // result from get_river_cards()
+let selectedTurnCardContext = -1;  // -1 = average, 0+ = specific turn card index
+let turnCardInfo = null;           // result from get_turn_cards()
 
 // === DOM Elements ===
 const el = {
@@ -123,6 +127,10 @@ const el = {
     strategyLegend: document.getElementById('strategy-legend'),
     strategyThead: document.getElementById('strategy-thead'),
     strategyTbody: document.getElementById('strategy-tbody'),
+
+    // Turn card selector
+    turnCardSelector: document.getElementById('turn-card-selector'),
+    turnCardGrid: document.getElementById('turn-card-grid'),
 
     // River card selector
     riverCardSelector: document.getElementById('river-card-selector'),
@@ -218,16 +226,21 @@ function handleStreetChange() {
 }
 
 function updateSolverAvailability(street) {
-    const canSolve = street === 'turn' || street === 'river';
+    const canSolve = street === 'flop' || street === 'turn' || street === 'river';
     el.solverUnsupported.style.display = canSolve ? 'none' : 'block';
     el.solverBoardGroup.style.display = canSolve ? '' : 'none';
     el.solveBtn.disabled = !canSolve || !treeBuilt;
 
-    // Update board placeholder for the street
-    if (street === 'turn') {
+    // Update board placeholder and default iterations for the street
+    if (street === 'flop') {
+        el.solverBoard.placeholder = 'e.g. KhQsJs';
+        el.solverIterations.value = 300;
+    } else if (street === 'turn') {
         el.solverBoard.placeholder = 'e.g. KhQsJs2c';
+        el.solverIterations.value = 200;
     } else {
         el.solverBoard.placeholder = 'e.g. KhQsJs2c3d';
+        el.solverIterations.value = 200;
     }
 }
 
@@ -353,6 +366,8 @@ async function buildTree() {
         solverActive = false;
         selectedRiverCardContext = -1;
         riverCardInfo = null;
+        selectedTurnCardContext = -1;
+        turnCardInfo = null;
         el.strategySection.style.display = 'none';
         updateSolverAvailability(el.startingStreet.value);
 
@@ -893,9 +908,10 @@ async function startSolve() {
         solverStopped = false;
         solverTotalIterations = 0;
         selectedRiverCardContext = -1;
+        selectedTurnCardContext = -1;
 
-        // Fetch river card info for turn trees
-        fetchRiverCards();
+        // Fetch card info for multi-street trees
+        fetchCardInfo();
 
         setStatus(`Solver created: ${createResult.num_oop_hands} OOP hands, ${createResult.num_ip_hands} IP hands`);
 
@@ -956,11 +972,16 @@ function resetSolverUI() {
     el.stopSolveBtn.style.display = 'none';
 }
 
-function fetchRiverCards() {
+function fetchCardInfo() {
     try {
         riverCardInfo = get_river_cards();
     } catch (e) {
         riverCardInfo = null;
+    }
+    try {
+        turnCardInfo = get_turn_cards();
+    } catch (e) {
+        turnCardInfo = null;
     }
 }
 
@@ -973,6 +994,50 @@ function getSuitClass(card) {
         case 'c': return 'suit-c';
         case 's': return 'suit-s';
         default: return '';
+    }
+}
+
+function renderTurnCardSelector() {
+    if (!turnCardInfo || !turnCardInfo.has_turn_cards) {
+        el.turnCardSelector.style.display = 'none';
+        return;
+    }
+
+    el.turnCardSelector.style.display = 'block';
+    el.turnCardGrid.innerHTML = '';
+
+    // "Avg" button
+    const avgBtn = document.createElement('button');
+    avgBtn.className = 'turn-card-btn' + (selectedTurnCardContext === -1 ? ' selected' : '');
+    avgBtn.textContent = 'Avg';
+    avgBtn.addEventListener('click', () => {
+        selectedTurnCardContext = -1;
+        selectedRiverCardContext = -1;
+        renderTurnCardSelector();
+        renderRiverCardSelector();
+        if (currentNodeState && currentNodeState.node_type !== 'terminal') {
+            displayNodeStrategy(currentPath, currentNodeState.player_to_act);
+        }
+    });
+    el.turnCardGrid.appendChild(avgBtn);
+
+    // Per-card buttons
+    for (let i = 0; i < turnCardInfo.cards.length; i++) {
+        const card = turnCardInfo.cards[i];
+        const btn = document.createElement('button');
+        const suitCls = getSuitClass(card);
+        btn.className = 'turn-card-btn ' + suitCls + (selectedTurnCardContext === i ? ' selected' : '');
+        btn.textContent = card;
+        btn.addEventListener('click', () => {
+            selectedTurnCardContext = i;
+            selectedRiverCardContext = -1;
+            renderTurnCardSelector();
+            renderRiverCardSelector();
+            if (currentNodeState && currentNodeState.node_type !== 'terminal') {
+                displayNodeStrategy(currentPath, currentNodeState.player_to_act);
+            }
+        });
+        el.turnCardGrid.appendChild(btn);
     }
 }
 
@@ -998,9 +1063,16 @@ function renderRiverCardSelector() {
     });
     el.riverCardGrid.appendChild(avgBtn);
 
-    // Per-card buttons
+    // Per-card buttons — skip the selected turn card if applicable
+    const skipTurnCard = (turnCardInfo && turnCardInfo.has_turn_cards && selectedTurnCardContext >= 0)
+        ? turnCardInfo.cards[selectedTurnCardContext]
+        : null;
+
     for (let i = 0; i < riverCardInfo.cards.length; i++) {
         const card = riverCardInfo.cards[i];
+        // Skip the turn card in the river selector
+        if (skipTurnCard && card === skipTurnCard) continue;
+
         const btn = document.createElement('button');
         const suitCls = getSuitClass(card);
         btn.className = 'river-card-btn ' + suitCls + (selectedRiverCardContext === i ? ' selected' : '');
@@ -1023,23 +1095,54 @@ function displayNodeStrategy(path, player) {
     }
 
     try {
-        // Check if this node is below a chance node (river betting in turn tree)
-        const belowChance = is_node_below_chance(path);
+        const hasTurnCards = turnCardInfo && turnCardInfo.has_turn_cards;
+        const hasRiverCards = riverCardInfo && riverCardInfo.has_river_cards;
+        const depth = get_chance_depth(path);
+
+        // Determine which selectors to show
+        const showTurnSelector = hasTurnCards && depth >= 1;
+        const showRiverSelector = (hasTurnCards && depth >= 2) || (!hasTurnCards && hasRiverCards && depth >= 1);
+
+        // Show/hide turn card selector
+        if (showTurnSelector) {
+            renderTurnCardSelector();
+        } else {
+            el.turnCardSelector.style.display = 'none';
+            if (depth === 0) {
+                selectedTurnCardContext = -1;
+            }
+        }
 
         // Show/hide river card selector
-        if (belowChance && riverCardInfo && riverCardInfo.has_river_cards) {
+        if (showRiverSelector) {
             renderRiverCardSelector();
         } else {
             el.riverCardSelector.style.display = 'none';
-            // Reset to avg when navigating to turn-level nodes
-            if (!belowChance) {
+            if (!showTurnSelector) {
                 selectedRiverCardContext = -1;
             }
         }
 
-        // Use context-aware function when river cards exist
-        const result = (riverCardInfo && riverCardInfo.has_river_cards)
-            ? get_node_strategy_for_context(path, player, belowChance ? selectedRiverCardContext : -1)
+        // Compute the card context to pass to WASM
+        let cardContext = -1; // default: average
+        if (hasTurnCards) {
+            // Flop tree
+            if (depth === 1 && selectedTurnCardContext >= 0) {
+                cardContext = selectedTurnCardContext;
+            } else if (depth === 2 && selectedTurnCardContext >= 0 && selectedRiverCardContext >= 0) {
+                const numRiverCards = riverCardInfo.cards.length;
+                cardContext = selectedTurnCardContext * numRiverCards + selectedRiverCardContext;
+            }
+        } else if (hasRiverCards) {
+            // Turn tree
+            if (depth >= 1 && selectedRiverCardContext >= 0) {
+                cardContext = selectedRiverCardContext;
+            }
+        }
+
+        // Use context-aware function when multi-street cards exist
+        const result = (hasRiverCards || hasTurnCards)
+            ? get_node_strategy_for_context(path, player, cardContext)
             : get_node_strategy(path, player);
 
         if (!result.success || result.action_names.length === 0) {

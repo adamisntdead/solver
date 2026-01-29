@@ -12,6 +12,8 @@
 //! - For 5-card boards (river): single context, hand ranks from HandInfo
 //! - For 4-card boards (turn→river): one context per valid river card,
 //!   hand ranks from precomputed `hand_rank_table`
+//! - For 3-card boards (flop→turn→river): two-level chance nodes with
+//!   composite contexts (turn_idx * num_river + river_idx)
 
 use crate::poker::hands::{Board, Combo, NUM_COMBOS};
 use crate::poker::matchups::evaluate_7cards;
@@ -34,8 +36,9 @@ struct HandInfo {
 /// Instead of walking the tree once per hand pair, this solver walks the
 /// betting tree once per iteration with arrays of per-hand values.
 ///
-/// Supports multi-street solving (turn→river) via a card context system:
-/// nodes below chance nodes have separate regrets per dealt river card.
+/// Supports multi-street solving via a card context system:
+/// - Turn→river: nodes below the chance node have separate regrets per river card.
+/// - Flop→turn→river: two levels of chance nodes with composite contexts.
 pub struct PostflopSolver {
     /// Per-node regret storage.
     /// Layout: `regrets[node_idx][context * num_actions * num_hands + action * num_hands + hand]`
@@ -59,16 +62,24 @@ pub struct PostflopSolver {
     /// Starting street (derived from board length).
     starting_street: Street,
 
+    /// Valid turn cards to deal (non-empty only for flop boards: 49 cards).
+    valid_turn_cards: Vec<u8>,
+
     /// Valid river cards to deal (empty for river-only boards).
+    /// For flop boards: same 49 cards as turn (skip dealt turn at runtime).
+    /// For turn boards: 48 cards.
     valid_river_cards: Vec<u8>,
 
-    /// Precomputed hand ranks per river card.
-    /// `hand_rank_table[river_idx][combo_idx]` = hand rank on (board + river_card).
+    /// Precomputed hand ranks per card context.
+    /// - Turn boards: `hand_rank_table[river_idx][combo_idx]`
+    /// - Flop boards: `hand_rank_table[turn_idx * num_river + river_idx][combo_idx]`
     /// Empty for river-only boards.
     hand_rank_table: Vec<Vec<u32>>,
 
     /// Number of card contexts per node.
-    /// 1 for nodes above the chance node, `valid_river_cards.len()` for nodes below.
+    /// - Depth 0 (before any chance): 1
+    /// - Depth 1 (after first chance): num_turn_cards (flop) or num_river_cards (turn)
+    /// - Depth 2 (after second chance): num_turn_cards * num_river_cards (flop only)
     node_num_contexts: Vec<usize>,
 }
 
@@ -112,10 +123,22 @@ impl PostflopSolver {
             }
         }
 
-        // Compute valid river cards and hand rank table for multi-street
-        let (valid_river_cards, hand_rank_table) = if is_river {
-            (Vec::new(), Vec::new())
+        // Compute valid cards and hand rank table for multi-street
+        let is_flop = starting_street == Street::Flop;
+        let (valid_turn_cards, valid_river_cards, hand_rank_table) = if is_river {
+            (Vec::new(), Vec::new(), Vec::new())
+        } else if is_flop {
+            // Flop: 49 non-board cards serve as both turn and river candidates
+            let mut cards: Vec<u8> = Vec::new();
+            for card in 0..52u8 {
+                if (board.mask >> card) & 1 == 0 {
+                    cards.push(card);
+                }
+            }
+            let table = precompute_hand_rank_table_flop(&board, &cards);
+            (cards.clone(), cards, table)
         } else {
+            // Turn: 48 non-board cards for the river
             let mut river_cards: Vec<u8> = Vec::new();
             for card in 0..52u8 {
                 if (board.mask >> card) & 1 == 0 {
@@ -123,12 +146,16 @@ impl PostflopSolver {
                 }
             }
             let table = precompute_hand_rank_table(&board, &river_cards);
-            (river_cards, table)
+            (Vec::new(), river_cards, table)
         };
 
         // Determine context count per node
-        let node_num_contexts =
-            compute_node_contexts(tree, is_river, valid_river_cards.len());
+        let node_num_contexts = compute_node_contexts(
+            tree,
+            starting_street,
+            valid_turn_cards.len(),
+            valid_river_cards.len(),
+        );
 
         // Allocate per-node storage
         let num_nodes = tree.len();
@@ -158,6 +185,7 @@ impl PostflopSolver {
             num_steps: [0, 0],
             board,
             starting_street,
+            valid_turn_cards,
             valid_river_cards,
             hand_rank_table,
             node_num_contexts,
@@ -344,7 +372,11 @@ impl PostflopSolver {
         }
     }
 
-    /// Handle a chance node (street transition / river card dealing).
+    /// Handle a chance node (street transition / card dealing).
+    ///
+    /// Supports two levels of chance for flop boards:
+    /// - Level 1: deal turn card (when no extra cards dealt on flop board)
+    /// - Level 2: deal river card (when turn already dealt, or turn board)
     fn handle_chance_node(
         &mut self,
         result: &mut [f32],
@@ -370,46 +402,110 @@ impl PostflopSolver {
             return;
         }
 
-        // Deal river card: enumerate all valid river cards
+        let extra_cards = (dealt_cards_mask ^ self.board.mask).count_ones();
+        let dealing_turn = !self.valid_turn_cards.is_empty() && extra_cards == 0;
+
         let opponent = 1 - traverser;
         let num_trav_hands = result.len();
-        let num_cards = self.valid_river_cards.len();
-        let inv_num_cards = 1.0 / num_cards as f32;
         let child_idx = node.children[0];
         result.fill(0.0);
 
-        // Clone to avoid borrow conflict with &mut self
-        let river_cards: Vec<u8> = self.valid_river_cards.clone();
+        if dealing_turn {
+            // === Deal turn card (flop board, first chance node) ===
+            let turn_cards: Vec<u8> = self.valid_turn_cards.clone();
+            let num_cards = turn_cards.len();
+            let inv = 1.0 / num_cards as f32;
 
-        for (river_idx, &rc) in river_cards.iter().enumerate() {
-            let new_mask = dealt_cards_mask | (1u64 << rc);
+            for (turn_idx, &tc) in turn_cards.iter().enumerate() {
+                let new_mask = dealt_cards_mask | (1u64 << tc);
 
-            // Scale cfreach by 1/num_cards, zero blocked opponent hands
-            let mut cfreach_dealt = Vec::with_capacity(cfreach.len());
-            for (j, &reach) in cfreach.iter().enumerate() {
-                let hand = &self.hands[opponent][j];
-                if hand.c0 == rc || hand.c1 == rc {
-                    cfreach_dealt.push(0.0);
-                } else {
-                    cfreach_dealt.push(reach * inv_num_cards);
+                let mut cfreach_dealt = Vec::with_capacity(cfreach.len());
+                for (j, &reach) in cfreach.iter().enumerate() {
+                    let hand = &self.hands[opponent][j];
+                    if hand.c0 == tc || hand.c1 == tc {
+                        cfreach_dealt.push(0.0);
+                    } else {
+                        cfreach_dealt.push(reach * inv);
+                    }
+                }
+
+                let mut card_result = vec![0.0f32; num_trav_hands];
+                self.solve_recursive(
+                    &mut card_result,
+                    tree,
+                    child_idx,
+                    traverser,
+                    &cfreach_dealt,
+                    turn_idx,
+                    new_mask,
+                );
+
+                for (h, hand) in self.hands[traverser].iter().enumerate() {
+                    if hand.c0 != tc && hand.c1 != tc {
+                        result[h] += card_result[h];
+                    }
                 }
             }
+        } else {
+            // === Deal river card ===
+            // Clone to avoid borrow conflict with &mut self
+            let river_cards: Vec<u8> = self.valid_river_cards.clone();
+            let num_river = river_cards.len();
 
-            let mut card_result = vec![0.0f32; num_trav_hands];
-            self.solve_recursive(
-                &mut card_result,
-                tree,
-                child_idx,
-                traverser,
-                &cfreach_dealt,
-                river_idx,
-                new_mask,
-            );
+            // For flop start, find the dealt turn card and its index
+            let (skip_card, turn_idx) = if !self.valid_turn_cards.is_empty() {
+                let extra_mask = dealt_cards_mask ^ self.board.mask;
+                let tc = extra_mask.trailing_zeros() as u8;
+                let idx = self.valid_turn_cards.iter().position(|&c| c == tc).unwrap();
+                (Some(tc), idx)
+            } else {
+                (None, 0)
+            };
 
-            // Zero blocked traverser hands, accumulate
-            for (h, hand) in self.hands[traverser].iter().enumerate() {
-                if hand.c0 != rc && hand.c1 != rc {
-                    result[h] += card_result[h];
+            let num_valid = num_river - if skip_card.is_some() { 1 } else { 0 };
+            let inv = 1.0 / num_valid as f32;
+
+            for (river_idx, &rc) in river_cards.iter().enumerate() {
+                if Some(rc) == skip_card {
+                    continue;
+                }
+
+                let new_mask = dealt_cards_mask | (1u64 << rc);
+
+                let mut cfreach_dealt = Vec::with_capacity(cfreach.len());
+                for (j, &reach) in cfreach.iter().enumerate() {
+                    let hand = &self.hands[opponent][j];
+                    if hand.c0 == rc || hand.c1 == rc {
+                        cfreach_dealt.push(0.0);
+                    } else {
+                        cfreach_dealt.push(reach * inv);
+                    }
+                }
+
+                // Compute card context
+                let card_context = if skip_card.is_some() {
+                    // Flop start: composite context
+                    turn_idx * num_river + river_idx
+                } else {
+                    // Turn start: simple river index
+                    river_idx
+                };
+
+                let mut card_result = vec![0.0f32; num_trav_hands];
+                self.solve_recursive(
+                    &mut card_result,
+                    tree,
+                    child_idx,
+                    traverser,
+                    &cfreach_dealt,
+                    card_context,
+                    new_mask,
+                );
+
+                for (h, hand) in self.hands[traverser].iter().enumerate() {
+                    if hand.c0 != rc && hand.c1 != rc {
+                        result[h] += card_result[h];
+                    }
                 }
             }
         }
@@ -460,19 +556,72 @@ impl PostflopSolver {
                 if self.valid_river_cards.is_empty() {
                     // === River-only fast path: use HandInfo.hand_rank ===
                     self.evaluate_showdown_river(result, trav_hands, opp_hands, cfreach, half_pot);
-                } else if dealt_cards_mask != self.board.mask {
-                    // === River card dealt: use hand_rank_table[card_context] ===
-                    self.evaluate_showdown_with_context(
-                        result,
-                        trav_hands,
-                        opp_hands,
-                        cfreach,
-                        half_pot,
-                        card_context,
-                    );
                 } else {
-                    // === All-in runout: enumerate river cards, average showdown ===
-                    self.evaluate_allin_runout(result, trav_hands, opp_hands, cfreach, half_pot);
+                    let extra_cards = (dealt_cards_mask ^ self.board.mask).count_ones();
+                    match extra_cards {
+                        2 => {
+                            // Turn + river dealt (flop start, all 5 cards present)
+                            self.evaluate_showdown_with_context(
+                                result,
+                                trav_hands,
+                                opp_hands,
+                                cfreach,
+                                half_pot,
+                                card_context,
+                            );
+                        }
+                        1 => {
+                            if !self.valid_turn_cards.is_empty() {
+                                // Flop start, turn dealt, all-in before river
+                                let num_river = self.valid_river_cards.len();
+                                let extra_mask = dealt_cards_mask ^ self.board.mask;
+                                let turn_card = extra_mask.trailing_zeros() as u8;
+                                self.evaluate_allin_runout(
+                                    result,
+                                    trav_hands,
+                                    opp_hands,
+                                    cfreach,
+                                    half_pot,
+                                    card_context * num_river,
+                                    Some(turn_card),
+                                );
+                            } else {
+                                // Turn start, river dealt → showdown with context
+                                self.evaluate_showdown_with_context(
+                                    result,
+                                    trav_hands,
+                                    opp_hands,
+                                    cfreach,
+                                    half_pot,
+                                    card_context,
+                                );
+                            }
+                        }
+                        0 => {
+                            if !self.valid_turn_cards.is_empty() {
+                                // Flop start, no cards dealt, all-in on flop
+                                self.evaluate_allin_double_runout(
+                                    result,
+                                    trav_hands,
+                                    opp_hands,
+                                    cfreach,
+                                    half_pot,
+                                );
+                            } else {
+                                // Turn start, no river dealt, all-in before river
+                                self.evaluate_allin_runout(
+                                    result,
+                                    trav_hands,
+                                    opp_hands,
+                                    cfreach,
+                                    half_pot,
+                                    0,
+                                    None,
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             _ => panic!("evaluate_terminal called on non-terminal node"),
@@ -556,6 +705,11 @@ impl PostflopSolver {
 
     /// All-in runout: enumerate valid river cards and average showdown results.
     /// Used when both players are all-in before the river card is dealt.
+    ///
+    /// Parameters:
+    /// - `table_offset`: base offset into hand_rank_table (0 for turn start,
+    ///   `turn_idx * num_river` for flop start with turn dealt)
+    /// - `skip_card`: card to skip in enumeration (turn card for flop start, None for turn start)
     fn evaluate_allin_runout(
         &self,
         result: &mut [f32],
@@ -563,6 +717,8 @@ impl PostflopSolver {
         opp_hands: &[HandInfo],
         cfreach: &[f32],
         half_pot: f32,
+        table_offset: usize,
+        skip_card: Option<u8>,
     ) {
         let river_cards = &self.valid_river_cards;
         for (h, trav) in trav_hands.iter().enumerate() {
@@ -583,17 +739,85 @@ impl PostflopSolver {
                 let mut total_v = 0.0f32;
                 let mut valid_count = 0u32;
                 for (river_idx, &rc) in river_cards.iter().enumerate() {
+                    if let Some(skip) = skip_card {
+                        if rc == skip {
+                            continue;
+                        }
+                    }
                     if trav.c0 == rc || trav.c1 == rc || opp.c0 == rc || opp.c1 == rc {
                         continue;
                     }
-                    let trav_rank = self.hand_rank_table[river_idx][trav.combo_idx];
-                    let opp_rank = self.hand_rank_table[river_idx][opp.combo_idx];
+                    let trav_rank =
+                        self.hand_rank_table[table_offset + river_idx][trav.combo_idx];
+                    let opp_rank =
+                        self.hand_rank_table[table_offset + river_idx][opp.combo_idx];
                     if trav_rank > opp_rank {
                         total_v += half_pot;
                     } else if trav_rank < opp_rank {
                         total_v -= half_pot;
                     }
                     valid_count += 1;
+                }
+                if valid_count > 0 {
+                    cfv += cfreach[j] * total_v / valid_count as f32;
+                }
+            }
+            result[h] = cfv;
+        }
+    }
+
+    /// Double-runout all-in: enumerate (turn, river) pairs and average showdown.
+    /// Used when both players are all-in on the flop (before turn is dealt).
+    fn evaluate_allin_double_runout(
+        &self,
+        result: &mut [f32],
+        trav_hands: &[HandInfo],
+        opp_hands: &[HandInfo],
+        cfreach: &[f32],
+        half_pot: f32,
+    ) {
+        let turn_cards = &self.valid_turn_cards;
+        let river_cards = &self.valid_river_cards;
+        let num_river = river_cards.len();
+
+        for (h, trav) in trav_hands.iter().enumerate() {
+            let mut cfv = 0.0f32;
+            for (j, opp) in opp_hands.iter().enumerate() {
+                if cfreach[j] == 0.0 {
+                    continue;
+                }
+                if trav.c0 == opp.c0
+                    || trav.c0 == opp.c1
+                    || trav.c1 == opp.c0
+                    || trav.c1 == opp.c1
+                {
+                    continue;
+                }
+
+                // Average over all valid (turn, river) pairs
+                let mut total_v = 0.0f32;
+                let mut valid_count = 0u32;
+                for (turn_idx, &tc) in turn_cards.iter().enumerate() {
+                    if trav.c0 == tc || trav.c1 == tc || opp.c0 == tc || opp.c1 == tc {
+                        continue;
+                    }
+                    for (river_idx, &rc) in river_cards.iter().enumerate() {
+                        if rc == tc {
+                            continue;
+                        }
+                        if trav.c0 == rc || trav.c1 == rc || opp.c0 == rc || opp.c1 == rc {
+                            continue;
+                        }
+                        let table_idx = turn_idx * num_river + river_idx;
+                        let trav_rank = self.hand_rank_table[table_idx][trav.combo_idx];
+                        let opp_rank = self.hand_rank_table[table_idx][opp.combo_idx];
+                        if trav_rank > opp_rank {
+                            total_v += half_pot;
+                        } else if trav_rank < opp_rank {
+                            total_v -= half_pot;
+                        }
+                        valid_count += 1;
+                    }
                 }
                 if valid_count > 0 {
                     cfv += cfreach[j] * total_v / valid_count as f32;
@@ -840,6 +1064,7 @@ impl PostflopSolver {
     }
 
     /// Handle chance node in best_response_value (immutable version).
+    /// Mirrors handle_chance_node logic for two-level dealing.
     fn best_response_chance(
         &self,
         result: &mut [f32],
@@ -865,42 +1090,104 @@ impl PostflopSolver {
             return;
         }
 
-        // Deal river card
+        let extra_cards = (dealt_cards_mask ^ self.board.mask).count_ones();
+        let dealing_turn = !self.valid_turn_cards.is_empty() && extra_cards == 0;
+
         let opponent = 1 - traverser;
         let num_trav_hands = result.len();
-        let num_cards = self.valid_river_cards.len();
-        let inv_num_cards = 1.0 / num_cards as f32;
         let child_idx = node.children[0];
         result.fill(0.0);
 
-        for (river_idx, &rc) in self.valid_river_cards.iter().enumerate() {
-            let new_mask = dealt_cards_mask | (1u64 << rc);
+        if dealing_turn {
+            // === Deal turn card (flop board, first chance node) ===
+            let num_cards = self.valid_turn_cards.len();
+            let inv = 1.0 / num_cards as f32;
 
-            let mut cfreach_dealt = Vec::with_capacity(cfreach.len());
-            for (j, &reach) in cfreach.iter().enumerate() {
-                let hand = &self.hands[opponent][j];
-                if hand.c0 == rc || hand.c1 == rc {
-                    cfreach_dealt.push(0.0);
-                } else {
-                    cfreach_dealt.push(reach * inv_num_cards);
+            for (turn_idx, &tc) in self.valid_turn_cards.iter().enumerate() {
+                let new_mask = dealt_cards_mask | (1u64 << tc);
+
+                let mut cfreach_dealt = Vec::with_capacity(cfreach.len());
+                for (j, &reach) in cfreach.iter().enumerate() {
+                    let hand = &self.hands[opponent][j];
+                    if hand.c0 == tc || hand.c1 == tc {
+                        cfreach_dealt.push(0.0);
+                    } else {
+                        cfreach_dealt.push(reach * inv);
+                    }
+                }
+
+                let mut card_result = vec![0.0f32; num_trav_hands];
+                self.best_response_value(
+                    &mut card_result,
+                    tree,
+                    child_idx,
+                    traverser,
+                    &cfreach_dealt,
+                    turn_idx,
+                    new_mask,
+                );
+
+                for (h, hand) in self.hands[traverser].iter().enumerate() {
+                    if hand.c0 != tc && hand.c1 != tc {
+                        result[h] += card_result[h];
+                    }
                 }
             }
+        } else {
+            // === Deal river card ===
+            let num_river = self.valid_river_cards.len();
 
-            let mut card_result = vec![0.0f32; num_trav_hands];
-            self.best_response_value(
-                &mut card_result,
-                tree,
-                child_idx,
-                traverser,
-                &cfreach_dealt,
-                river_idx,
-                new_mask,
-            );
+            // For flop start, find the dealt turn card and its index
+            let (skip_card, turn_idx) = if !self.valid_turn_cards.is_empty() {
+                let extra_mask = dealt_cards_mask ^ self.board.mask;
+                let tc = extra_mask.trailing_zeros() as u8;
+                let idx = self.valid_turn_cards.iter().position(|&c| c == tc).unwrap();
+                (Some(tc), idx)
+            } else {
+                (None, 0)
+            };
 
-            // Zero blocked traverser hands, accumulate
-            for (h, hand) in self.hands[traverser].iter().enumerate() {
-                if hand.c0 != rc && hand.c1 != rc {
-                    result[h] += card_result[h];
+            let num_valid = num_river - if skip_card.is_some() { 1 } else { 0 };
+            let inv = 1.0 / num_valid as f32;
+
+            for (river_idx, &rc) in self.valid_river_cards.iter().enumerate() {
+                if Some(rc) == skip_card {
+                    continue;
+                }
+
+                let new_mask = dealt_cards_mask | (1u64 << rc);
+
+                let mut cfreach_dealt = Vec::with_capacity(cfreach.len());
+                for (j, &reach) in cfreach.iter().enumerate() {
+                    let hand = &self.hands[opponent][j];
+                    if hand.c0 == rc || hand.c1 == rc {
+                        cfreach_dealt.push(0.0);
+                    } else {
+                        cfreach_dealt.push(reach * inv);
+                    }
+                }
+
+                let card_context = if skip_card.is_some() {
+                    turn_idx * num_river + river_idx
+                } else {
+                    river_idx
+                };
+
+                let mut card_result = vec![0.0f32; num_trav_hands];
+                self.best_response_value(
+                    &mut card_result,
+                    tree,
+                    child_idx,
+                    traverser,
+                    &cfreach_dealt,
+                    card_context,
+                    new_mask,
+                );
+
+                for (h, hand) in self.hands[traverser].iter().enumerate() {
+                    if hand.c0 != rc && hand.c1 != rc {
+                        result[h] += card_result[h];
+                    }
                 }
             }
         }
@@ -990,6 +1277,76 @@ impl PostflopSolver {
         let h = &self.hands[player][hand_idx];
         (h.c0, h.c1)
     }
+
+    /// Get the number of valid turn cards (49 for flop boards, 0 otherwise).
+    pub fn num_turn_cards(&self) -> usize {
+        self.valid_turn_cards.len()
+    }
+
+    /// Get string representations of all valid turn cards.
+    /// Returns empty vec for non-flop boards.
+    pub fn turn_card_strings(&self) -> Vec<String> {
+        use crate::poker::hands::card_to_string;
+        self.valid_turn_cards
+            .iter()
+            .map(|&c| card_to_string(c))
+            .collect()
+    }
+
+    /// Get the raw card index for a given turn card context index.
+    /// Returns None if the index is out of range or this is not a flop board.
+    pub fn turn_card_at(&self, ctx: usize) -> Option<u8> {
+        self.valid_turn_cards.get(ctx).copied()
+    }
+
+    /// Get the chance depth for a node (0 = before any chance, 1 = after first, 2 = after second).
+    pub fn chance_depth(&self, node_idx: usize) -> usize {
+        let ctx = self.node_num_contexts[node_idx];
+        if ctx <= 1 {
+            return 0;
+        }
+        let num_turn = self.valid_turn_cards.len();
+        let num_river = self.valid_river_cards.len();
+        if num_turn > 0 {
+            if ctx == num_turn {
+                return 1;
+            }
+            if num_river > 0 && ctx == num_turn * num_river {
+                return 2;
+            }
+        }
+        if num_river > 0 && ctx == num_river {
+            return 1;
+        }
+        0
+    }
+
+    /// Get the cards that a given context represents for a node.
+    /// Returns (turn_card, river_card) - either or both may be None.
+    pub fn context_cards(&self, node_idx: usize, ctx: usize) -> (Option<u8>, Option<u8>) {
+        let depth = self.chance_depth(node_idx);
+        match depth {
+            1 if !self.valid_turn_cards.is_empty() => {
+                // Flop tree, turn level
+                (self.valid_turn_cards.get(ctx).copied(), None)
+            }
+            1 => {
+                // Turn tree, river level
+                (None, self.valid_river_cards.get(ctx).copied())
+            }
+            2 => {
+                // Flop tree, river level (composite context)
+                let num_river = self.valid_river_cards.len();
+                let turn_idx = ctx / num_river;
+                let river_idx = ctx % num_river;
+                (
+                    self.valid_turn_cards.get(turn_idx).copied(),
+                    self.valid_river_cards.get(river_idx).copied(),
+                )
+            }
+            _ => (None, None),
+        }
+    }
 }
 
 // === Helper functions ===
@@ -1026,43 +1383,91 @@ fn precompute_hand_rank_table(board: &Board, valid_river_cards: &[u8]) -> Vec<Ve
 
 /// Walk the tree to determine how many card contexts each node needs.
 ///
-/// Nodes above the chance node (turn betting): 1 context.
-/// Nodes below the chance node (river betting): `num_river_cards` contexts.
+/// Uses chance_depth to track how many chance nodes are above each node:
+/// - depth 0 → 1 context (e.g., flop/turn betting before any dealt card)
+/// - depth 1 → turn-level contexts (flop: num_turn_cards, turn: num_river_cards)
+/// - depth 2 → num_turn_cards * num_river_cards (flop only, river betting)
 fn compute_node_contexts(
     tree: &IndexedActionTree,
-    is_river: bool,
+    starting_street: Street,
+    num_turn_cards: usize,
     num_river_cards: usize,
 ) -> Vec<usize> {
     let mut contexts = vec![1usize; tree.len()];
-    if is_river || num_river_cards == 0 {
+    if starting_street == Street::River {
         return contexts;
     }
+
+    // Build context sizes per chance depth
+    let context_sizes: Vec<usize> = if starting_street == Street::Flop {
+        vec![1, num_turn_cards, num_turn_cards * num_river_cards]
+    } else {
+        // Turn
+        vec![1, num_river_cards]
+    };
 
     fn walk(
         tree: &IndexedActionTree,
         node_idx: usize,
-        below_chance: bool,
+        chance_depth: usize,
         contexts: &mut Vec<usize>,
-        num_contexts: usize,
+        context_sizes: &[usize],
     ) {
         let node = tree.get(node_idx);
-        if below_chance && node.is_player() {
-            contexts[node_idx] = num_contexts;
+        if node.is_player() && chance_depth > 0 {
+            let depth_idx = chance_depth.min(context_sizes.len() - 1);
+            contexts[node_idx] = context_sizes[depth_idx];
         }
-        let is_chance = node.is_chance();
+        let new_depth = if node.is_chance() {
+            chance_depth + 1
+        } else {
+            chance_depth
+        };
         for &child_idx in &node.children {
-            walk(
-                tree,
-                child_idx,
-                below_chance || is_chance,
-                contexts,
-                num_contexts,
-            );
+            walk(tree, child_idx, new_depth, contexts, context_sizes);
         }
     }
 
-    walk(tree, tree.root_idx, false, &mut contexts, num_river_cards);
+    walk(tree, tree.root_idx, 0, &mut contexts, &context_sizes);
     contexts
+}
+
+/// Precompute hand rank table for flop boards: all (turn, river) pairs.
+///
+/// Returns `table[turn_idx * num_cards + river_idx][combo_idx]` = hand rank
+/// on (flop + turn_card + river_card). Diagonal entries (turn == river) are u32::MAX.
+fn precompute_hand_rank_table_flop(board: &Board, valid_cards: &[u8]) -> Vec<Vec<u32>> {
+    let num_cards = valid_cards.len();
+    let mut table = Vec::with_capacity(num_cards * num_cards);
+
+    for &tc in valid_cards.iter() {
+        for &rc in valid_cards.iter() {
+            if tc == rc {
+                table.push(vec![u32::MAX; NUM_COMBOS]);
+                continue;
+            }
+            let mut ranks = vec![u32::MAX; NUM_COMBOS];
+            let board_mask = board.mask | (1u64 << tc) | (1u64 << rc);
+            for combo_idx in 0..NUM_COMBOS {
+                let combo = Combo::from_index(combo_idx);
+                if combo.conflicts_with_mask(board_mask) {
+                    continue;
+                }
+                let cards = [
+                    board.cards[0],
+                    board.cards[1],
+                    board.cards[2],
+                    tc,
+                    rc,
+                    combo.c0,
+                    combo.c1,
+                ];
+                ranks[combo_idx] = evaluate_7cards(&cards);
+            }
+            table.push(ranks);
+        }
+    }
+    table
 }
 
 #[cfg(test)]
@@ -1162,6 +1567,82 @@ mod tests {
         assert!(
             exploit_pct < 5.0,
             "Exploitability should be < 5% pot after 1000 iterations, got {:.2}%",
+            exploit_pct,
+        );
+    }
+
+    // === Flop→Turn→River tests ===
+
+    fn make_flop_test_game(
+        board_str: &str,
+        oop_range_str: &str,
+        ip_range_str: &str,
+    ) -> PostflopGame {
+        let flop_sizes =
+            BetSizeOptions::try_from_strs("67%", "a").expect("Invalid bet sizes");
+        let turn_sizes =
+            BetSizeOptions::try_from_strs("67%", "a").expect("Invalid bet sizes");
+        let river_sizes =
+            BetSizeOptions::try_from_strs("67%", "a").expect("Invalid bet sizes");
+        let config = TreeConfig::new(2)
+            .with_stack(100)
+            .with_starting_street(Street::Flop)
+            .with_starting_pot(100)
+            .with_flop(StreetConfig::uniform(flop_sizes))
+            .with_turn(StreetConfig::uniform(turn_sizes))
+            .with_river(StreetConfig::uniform(river_sizes));
+
+        let tree = ActionTree::new(config).expect("Failed to build tree");
+        let indexed_tree = tree.to_indexed();
+        let board = parse_board(board_str).expect("Invalid board");
+        let oop_range = parse_range(oop_range_str).expect("Invalid OOP range");
+        let ip_range = parse_range(ip_range_str).expect("Invalid IP range");
+
+        PostflopGame::new(indexed_tree, board, oop_range, ip_range, 100, 100)
+    }
+
+    #[test]
+    fn test_flop_solver_creation() {
+        let game = make_flop_test_game("KhQsJs", "AA,KK", "QQ,JJ");
+        let solver = PostflopSolver::new(&game);
+
+        assert!(solver.num_hands(0) > 0);
+        assert!(solver.num_hands(1) > 0);
+        assert_eq!(solver.num_turn_cards(), 49); // 52 - 3 board cards
+        assert_eq!(solver.num_river_cards(), 49); // same pool, skip at runtime
+    }
+
+    #[test]
+    fn test_flop_exploitability_decreases() {
+        let game = make_flop_test_game("KhQsJs", "AA,KK", "QQ,JJ");
+        let mut solver = PostflopSolver::new(&game);
+
+        let exploit_before = solver.exploitability(&game);
+        solver.train(&game, 100);
+        let exploit_after = solver.exploitability(&game);
+
+        assert!(
+            exploit_after < exploit_before,
+            "Flop exploitability should decrease: before={}, after={}",
+            exploit_before,
+            exploit_after,
+        );
+    }
+
+    #[test]
+    fn test_flop_convergence() {
+        let game = make_flop_test_game("KhQsJs", "AA,KK", "QQ,JJ");
+        let mut solver = PostflopSolver::new(&game);
+
+        solver.train(&game, 500);
+        let exploit = solver.exploitability(&game);
+        let pot = 100.0f32;
+        let exploit_pct = exploit / pot * 100.0;
+
+        // Should converge to < 15% of pot after 500 iterations
+        assert!(
+            exploit_pct < 15.0,
+            "Flop exploitability should be < 15% pot after 500 iterations, got {:.2}%",
             exploit_pct,
         );
     }
