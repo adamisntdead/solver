@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/solver-wasm"]
+members = [".", "crates/solver-wasm", "src-tauri"]
 
 [package]
 name = "solver"

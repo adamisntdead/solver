@@ -18,13 +18,13 @@ import init, {
     is_node_below_chance,
     get_chance_depth,
     get_node_strategy_for_context
-} from '../pkg/solver_wasm.js';
+} from './tauri-bridge.js';
 
 import * as TreeView from './tree-view.js';
 const { setNumPlayers } = TreeView;
 
 // === State ===
-let wasmLoaded = false;
+let apiReady = false;
 let currentConfig = null;
 let currentPath = '';
 let treeBuilt = false;
@@ -141,11 +141,11 @@ const el = {
 
 // === Initialize ===
 async function initialize() {
-    setStatus('Loading WASM module...');
+    setStatus('Initializing...');
 
     try {
         await init();
-        wasmLoaded = true;
+        apiReady = true;
         setStatus('Ready - Press Ctrl+B to build tree', 'success');
 
         // Initialize tree view
@@ -157,7 +157,7 @@ async function initialize() {
         };
 
         // Load default config
-        const defaultConfig = get_default_config();
+        const defaultConfig = await get_default_config();
         currentConfig = JSON.parse(defaultConfig);
         loadConfigToUI(currentConfig);
 
@@ -169,8 +169,8 @@ async function initialize() {
         setupEventListeners();
 
     } catch (error) {
-        setStatus(`Failed to load WASM: ${error.message}`, 'error');
-        console.error('WASM init error:', error);
+        setStatus(`Failed to initialize: ${error.message}`, 'error');
+        console.error('Init error:', error);
     }
 }
 
@@ -396,8 +396,8 @@ function handleGlobalKeyDown(e) {
 
 // === Build Tree ===
 async function buildTree() {
-    if (!wasmLoaded) {
-        setStatus('WASM not loaded', 'error');
+    if (!apiReady) {
+        setStatus('Not ready', 'error');
         return;
     }
 
@@ -408,14 +408,14 @@ async function buildTree() {
         const configJson = JSON.stringify(currentConfig);
 
         // Validate
-        const validation = validate_config(configJson);
+        const validation = await validate_config(configJson);
         if (!validation.valid) {
             setStatus(`Validation errors: ${validation.errors.join(', ')}`, 'error');
             return;
         }
 
         // Build
-        const result = build_tree(configJson);
+        const result = await build_tree(configJson);
         if (!result.success) {
             setStatus(`Build failed: ${result.error}`, 'error');
             return;
@@ -598,11 +598,11 @@ function loadConfig(event) {
 
 // === Tree View ===
 async function loadTreeView() {
-    if (!wasmLoaded || !currentConfig) return;
+    if (!apiReady || !currentConfig) return;
 
     try {
         const configJson = JSON.stringify(currentConfig);
-        const root = get_tree_root(configJson);
+        const root = await get_tree_root(configJson);
         if (root) {
             TreeView.setTreeData(root);
         }
@@ -613,11 +613,11 @@ async function loadTreeView() {
 }
 
 async function getTreeChildren(path) {
-    if (!wasmLoaded || !currentConfig) return [];
+    if (!apiReady || !currentConfig) return [];
 
     try {
         const configJson = JSON.stringify(currentConfig);
-        return get_tree_children(configJson, path) || [];
+        return await get_tree_children(configJson, path) || [];
     } catch (error) {
         console.error('Error getting children:', error);
         return [];
@@ -642,12 +642,12 @@ function handleCollapseAll() {
 }
 
 // === Navigation ===
-function navigateToPath(path) {
-    if (!wasmLoaded || !treeBuilt) return;
+async function navigateToPath(path) {
+    if (!apiReady || !treeBuilt) return;
 
     try {
         const configJson = JSON.stringify(currentConfig);
-        const nodeState = get_node_at_path(configJson, path);
+        const nodeState = await get_node_at_path(configJson, path);
 
         if (nodeState.error) {
             setStatus(`Navigation error: ${nodeState.error}`, 'error');
@@ -754,11 +754,11 @@ function updateEnabledActions(actions) {
 }
 
 async function handleActionClick(actionIndex) {
-    if (!wasmLoaded || !treeBuilt) return;
+    if (!apiReady || !treeBuilt) return;
 
     try {
         const configJson = JSON.stringify(currentConfig);
-        const nodeState = get_action_result(configJson, currentPath, actionIndex);
+        const nodeState = await get_action_result(configJson, currentPath, actionIndex);
 
         if (nodeState.error) {
             setStatus(`Action error: ${nodeState.error}`, 'error');
@@ -921,7 +921,7 @@ function getActionColor(name, index) {
 }
 
 async function startSolve() {
-    if (!wasmLoaded || !treeBuilt || solverRunning) return;
+    if (!apiReady || !treeBuilt || solverRunning) return;
 
     const board = el.solverBoard.value.trim();
     const ranges = getSolverRangesFromUI();
@@ -967,7 +967,7 @@ async function startSolve() {
     el.solverExploit.textContent = '-';
 
     try {
-        const createResult = create_solver(JSON.stringify(solverConfig));
+        const createResult = await create_solver(JSON.stringify(solverConfig));
         if (!createResult.success) {
             setStatus(`Solver error: ${createResult.error}`, 'error');
             resetSolverUI();
@@ -982,13 +982,13 @@ async function startSolve() {
         selectedTurnCardContext = -1;
 
         // Fetch card info for multi-street trees
-        fetchCardInfo();
+        await fetchCardInfo();
 
         setStatus(`Solver created: ${createResult.num_oop_hands} OOP hands, ${createResult.num_ip_hands} IP hands`);
 
         // Run iterations in batches
         const batchSize = 50;
-        const runBatch = () => {
+        const runBatch = async () => {
             if (solverStopped || solverTotalIterations >= targetIterations) {
                 // Done
                 solverRunning = false;
@@ -996,7 +996,7 @@ async function startSolve() {
                 el.stopSolveBtn.style.display = 'none';
                 el.solveBtn.textContent = 'Re-solve';
 
-                const finalExploit = get_exploitability();
+                const finalExploit = await get_exploitability();
                 const exploitPct = pot > 0 ? (finalExploit / pot * 100).toFixed(2) : '?';
                 setStatus(`Solve complete: ${solverTotalIterations} iterations, ${exploitPct}% pot exploitability`, 'success');
 
@@ -1010,7 +1010,7 @@ async function startSolve() {
             const remaining = targetIterations - solverTotalIterations;
             const count = Math.min(batchSize, remaining);
 
-            const result = run_iterations(count);
+            const result = await run_iterations(count);
             solverTotalIterations = result.total_iterations;
 
             // Update progress
@@ -1043,14 +1043,14 @@ function resetSolverUI() {
     el.stopSolveBtn.style.display = 'none';
 }
 
-function fetchCardInfo() {
+async function fetchCardInfo() {
     try {
-        riverCardInfo = get_river_cards();
+        riverCardInfo = await get_river_cards();
     } catch (e) {
         riverCardInfo = null;
     }
     try {
-        turnCardInfo = get_turn_cards();
+        turnCardInfo = await get_turn_cards();
     } catch (e) {
         turnCardInfo = null;
     }
@@ -1159,7 +1159,7 @@ function renderRiverCardSelector() {
     }
 }
 
-function displayNodeStrategy(path, player) {
+async function displayNodeStrategy(path, player) {
     if (!solverActive) {
         el.strategySection.style.display = 'none';
         return;
@@ -1168,7 +1168,7 @@ function displayNodeStrategy(path, player) {
     try {
         const hasTurnCards = turnCardInfo && turnCardInfo.has_turn_cards;
         const hasRiverCards = riverCardInfo && riverCardInfo.has_river_cards;
-        const depth = get_chance_depth(path);
+        const depth = await get_chance_depth(path);
 
         // Determine which selectors to show
         const showTurnSelector = hasTurnCards && depth >= 1;
@@ -1213,8 +1213,8 @@ function displayNodeStrategy(path, player) {
 
         // Use context-aware function when multi-street cards exist
         const result = (hasRiverCards || hasTurnCards)
-            ? get_node_strategy_for_context(path, player, cardContext)
-            : get_node_strategy(path, player);
+            ? await get_node_strategy_for_context(path, player, cardContext)
+            : await get_node_strategy(path, player);
 
         if (!result.success || result.action_names.length === 0) {
             el.strategySection.style.display = 'none';
