@@ -21,6 +21,7 @@ import init, {
 } from '../pkg/solver_wasm.js';
 
 import * as TreeView from './tree-view.js';
+const { setNumPlayers } = TreeView;
 
 // === State ===
 let wasmLoaded = false;
@@ -432,6 +433,9 @@ async function buildTree() {
         turnCardInfo = null;
         el.strategySection.style.display = 'none';
         updateSolverAvailability(el.startingStreet.value);
+
+        // Set player count for tree view display
+        setNumPlayers(parseInt(el.numPlayers.value) || 2);
 
         // Load tree view
         await loadTreeView();

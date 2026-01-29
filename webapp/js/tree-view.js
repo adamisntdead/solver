@@ -6,6 +6,7 @@ let expandedNodes = new Set();
 let selectedPath = '';
 let onNodeSelect = null;
 let treeViewEl = null;
+let numPlayers = 2; // Default to 2 players
 
 // Flat list of visible nodes for keyboard navigation
 let visibleNodes = [];
@@ -19,6 +20,13 @@ export function initTreeView(container, onSelect) {
 
     // Set up keyboard navigation
     container.addEventListener('keydown', handleKeyDown);
+}
+
+/**
+ * Set the number of players (for display purposes)
+ */
+export function setNumPlayers(n) {
+    numPlayers = n;
 }
 
 /**
@@ -321,10 +329,8 @@ function formatActionLabel(node) {
 }
 
 function getPlayerCount(node) {
-    // Try to infer from label or default to 2
-    const label = node.label || '';
-    const match = label.match(/(\d+)-way/i);
-    return match ? match[1] : '2';
+    // Use the module-level numPlayers set by main.js
+    return numPlayers.toString();
 }
 
 function formatCount(n) {
