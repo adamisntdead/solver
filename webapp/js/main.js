@@ -111,6 +111,7 @@ const el = {
     solverUnsupported: document.getElementById('solver-unsupported'),
     solverBoardGroup: document.getElementById('solver-board-group'),
     solverBoard: document.getElementById('solver-board'),
+    solverRangesContainer: document.getElementById('solver-ranges-container'),
     solverOopRange: document.getElementById('solver-oop-range'),
     solverIpRange: document.getElementById('solver-ip-range'),
     solverIterations: document.getElementById('solver-iterations'),
@@ -158,6 +159,10 @@ async function initialize() {
         const defaultConfig = get_default_config();
         currentConfig = JSON.parse(defaultConfig);
         loadConfigToUI(currentConfig);
+
+        // Initialize solver range inputs based on player count
+        const numPlayers = parseInt(el.numPlayers.value) || 2;
+        rebuildSolverRangeInputs(numPlayers);
 
         // Set up event listeners
         setupEventListeners();
@@ -250,6 +255,8 @@ function handlePlayerCountChange() {
     if (el.perPlayerStacks.checked) {
         rebuildStackInputs(numPlayers);
     }
+    // Also rebuild solver range inputs
+    rebuildSolverRangeInputs(numPlayers);
 }
 
 function handleStackModeChange() {
@@ -311,6 +318,61 @@ function getStacksFromUI() {
         stacks.push(parseInt(input.value) || 100);
     });
     return stacks;
+}
+
+// === Solver Range Management ===
+function rebuildSolverRangeInputs(numPlayers) {
+    const positions = getSolverPositionNames(numPlayers);
+
+    el.solverRangesContainer.innerHTML = '';
+
+    for (let i = 0; i < numPlayers; i++) {
+        const formGroup = document.createElement('div');
+        formGroup.className = 'form-group';
+
+        const label = document.createElement('label');
+        label.textContent = `${positions[i]} Range`;
+        label.setAttribute('for', `solver-range-${i}`);
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.id = `solver-range-${i}`;
+        input.className = 'solver-range-input';
+        input.dataset.player = i;
+        input.placeholder = 'e.g. AA,KK,QQ,AKs';
+        input.spellcheck = false;
+
+        formGroup.appendChild(label);
+        formGroup.appendChild(input);
+        el.solverRangesContainer.appendChild(formGroup);
+    }
+
+    // Update el references for 2-player compatibility
+    if (numPlayers === 2) {
+        el.solverOopRange = document.getElementById('solver-range-1');
+        el.solverIpRange = document.getElementById('solver-range-0');
+    }
+}
+
+function getSolverPositionNames(numPlayers) {
+    // Return position names in tree player order (0 = first to act postflop)
+    // For HU: [IP, OOP] — IP acts first postflop (BTN), OOP acts second (BB)
+    // For 3+: positions in standard postflop order (SB first, then BB, then others)
+    if (numPlayers === 2) return ['IP', 'OOP'];
+    if (numPlayers === 3) return ['SB', 'BB', 'BTN'];
+    if (numPlayers === 4) return ['SB', 'BB', 'CO', 'BTN'];
+    if (numPlayers === 5) return ['SB', 'BB', 'MP', 'CO', 'BTN'];
+    if (numPlayers === 6) return ['SB', 'BB', 'UTG', 'MP', 'CO', 'BTN'];
+    return Array.from({ length: numPlayers }, (_, i) => `P${i + 1}`);
+}
+
+function getSolverRangesFromUI() {
+    const inputs = el.solverRangesContainer.querySelectorAll('.solver-range-input');
+    const ranges = [];
+    inputs.forEach(input => {
+        ranges.push(input.value.trim());
+    });
+    return ranges;
 }
 
 function handleGlobalKeyDown(e) {
@@ -491,6 +553,9 @@ function loadConfigToUI(config) {
     el.preflop3betRaise.value = config.preflop?.three_bet_sizes?.raise || '3x, a';
     el.postflopBet.value = config.flop?.sizes?.bet || '33%, 67%, 100%';
     el.postflopRaise.value = config.flop?.sizes?.raise || '2.5x, a';
+
+    // Rebuild solver range inputs for the player count
+    rebuildSolverRangeInputs(config.num_players || 2);
 }
 
 function saveConfig() {
@@ -855,35 +920,37 @@ async function startSolve() {
     if (!wasmLoaded || !treeBuilt || solverRunning) return;
 
     const board = el.solverBoard.value.trim();
-    const oopRange = el.solverOopRange.value.trim();
-    const ipRange = el.solverIpRange.value.trim();
+    const ranges = getSolverRangesFromUI();
     const targetIterations = parseInt(el.solverIterations.value) || 200;
+    const numPlayers = parseInt(el.numPlayers.value);
 
     if (!board) {
         setStatus('Enter a board (e.g., KhQsJs2c3d)', 'error');
         return;
     }
-    if (!oopRange) {
-        setStatus('Enter an OOP range', 'error');
-        return;
-    }
-    if (!ipRange) {
-        setStatus('Enter an IP range', 'error');
-        return;
+
+    // Validate ranges
+    for (let i = 0; i < ranges.length; i++) {
+        if (!ranges[i]) {
+            const positions = getSolverPositionNames(numPlayers);
+            setStatus(`Enter a range for ${positions[i]}`, 'error');
+            return;
+        }
     }
 
-    // Derive pot and effective_stack from tree config
+    // Derive pot and stacks from tree config
     const config = collectConfigFromUI();
     const pot = config.starting_pot || (config.preflop ? config.preflop.blinds[0] + config.preflop.blinds[1] : 100);
-    const effectiveStack = config.starting_stacks[0] || 100;
+    const stacks = config.starting_stacks.length === 1
+        ? Array(numPlayers).fill(config.starting_stacks[0])
+        : config.starting_stacks;
 
-    // Build solver config
+    // Build solver config - use n-player format
     const solverConfig = {
         board,
-        oop_range: oopRange,
-        ip_range: ipRange,
+        ranges,
+        stacks,
         pot,
-        effective_stack: effectiveStack,
         tree_config: config
     };
 

@@ -147,13 +147,16 @@
                         <label for="solver-board">Board</label>
                         <input type="text" id="solver-board" placeholder="e.g. KhQsJs2c3d" spellcheck="false">
                     </div>
-                    <div class="form-group">
-                        <label for="solver-oop-range">OOP Range</label>
-                        <input type="text" id="solver-oop-range" placeholder="e.g. AA,KK,QQ,AKs" spellcheck="false">
-                    </div>
-                    <div class="form-group">
-                        <label for="solver-ip-range">IP Range</label>
-                        <input type="text" id="solver-ip-range" placeholder="e.g. AA,KK,AKs,AQs" spellcheck="false">
+                    <div class="solver-ranges-container" id="solver-ranges-container">
+                        <!-- Dynamic range inputs will be populated by JS -->
+                        <div class="form-group">
+                            <label for="solver-oop-range">OOP Range</label>
+                            <input type="text" id="solver-oop-range" class="solver-range-input" data-player="1" placeholder="e.g. AA,KK,QQ,AKs" spellcheck="false">
+                        </div>
+                        <div class="form-group">
+                            <label for="solver-ip-range">IP Range</label>
+                            <input type="text" id="solver-ip-range" class="solver-range-input" data-player="0" placeholder="e.g. AA,KK,AKs,AQs" spellcheck="false">
+                        </div>
                     </div>
                     <div class="form-row">
                         <div class="form-group">
