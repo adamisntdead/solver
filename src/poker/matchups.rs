@@ -330,6 +330,136 @@ pub fn hand_category_name(rank: u32) -> &'static str {
     }
 }
 
+/// Compute multiway equity using pairwise approximation.
+///
+/// Given hand ranks for N players and an active mask indicating which players are in the pot,
+/// returns the equity (probability of winning) for each player.
+///
+/// The approximation uses: P(player i wins) ∝ ∏_{j≠i, j active} P(i beats j)
+/// where P(i beats j) is derived from comparing hand ranks.
+///
+/// # Arguments
+/// * `hand_ranks` - Hand rank for each player (higher = better, u32::MAX = folded/blocked)
+/// * `active_mask` - Bitmask of active players (bit i set = player i is in the pot)
+///
+/// # Returns
+/// A vector of equities, one per player. Folded/blocked players get 0.0.
+pub fn compute_multiway_equity(hand_ranks: &[u32], active_mask: u64) -> Vec<f64> {
+    let n = hand_ranks.len();
+    let mut equity = vec![0.0; n];
+
+    // Count active players and find their indices
+    let active_players: Vec<usize> = (0..n)
+        .filter(|&i| (active_mask >> i) & 1 == 1 && hand_ranks[i] != u32::MAX)
+        .collect();
+
+    let num_active = active_players.len();
+
+    if num_active == 0 {
+        return equity;
+    }
+
+    if num_active == 1 {
+        // Single player wins automatically
+        equity[active_players[0]] = 1.0;
+        return equity;
+    }
+
+    if num_active == 2 {
+        // Heads-up: direct comparison
+        let p0 = active_players[0];
+        let p1 = active_players[1];
+        if hand_ranks[p0] > hand_ranks[p1] {
+            equity[p0] = 1.0;
+        } else if hand_ranks[p1] > hand_ranks[p0] {
+            equity[p1] = 1.0;
+        } else {
+            // Tie
+            equity[p0] = 0.5;
+            equity[p1] = 0.5;
+        }
+        return equity;
+    }
+
+    // Multi-way: use pairwise approximation
+    // P(player i wins) ≈ ∏_{j≠i} P(i beats j), then normalize
+    let mut raw_equity = vec![0.0; n];
+
+    for &pi in &active_players {
+        let rank_i = hand_ranks[pi];
+        let mut product = 1.0;
+
+        for &pj in &active_players {
+            if pi == pj {
+                continue;
+            }
+            let rank_j = hand_ranks[pj];
+
+            // P(i beats j): 1.0 if i > j, 0.5 if tie, 0.0 if j > i
+            let p_win = if rank_i > rank_j {
+                1.0
+            } else if rank_i == rank_j {
+                0.5
+            } else {
+                0.0
+            };
+            product *= p_win;
+        }
+
+        raw_equity[pi] = product;
+    }
+
+    // Normalize
+    let sum: f64 = raw_equity.iter().sum();
+    if sum > 0.0 {
+        for i in 0..n {
+            equity[i] = raw_equity[i] / sum;
+        }
+    } else {
+        // All zero products (everyone loses to someone) - use fallback
+        // Find the best hand(s) and split equally
+        let best_rank = active_players.iter().map(|&i| hand_ranks[i]).max().unwrap();
+        let winners: Vec<usize> = active_players
+            .iter()
+            .filter(|&&i| hand_ranks[i] == best_rank)
+            .copied()
+            .collect();
+        let share = 1.0 / winners.len() as f64;
+        for w in winners {
+            equity[w] = share;
+        }
+    }
+
+    equity
+}
+
+/// Compute multiway equity for a specific set of combo indices against a board.
+///
+/// This is a convenience wrapper that looks up hand ranks and calls `compute_multiway_equity`.
+///
+/// # Arguments
+/// * `matchups` - The matchup table for the current board
+/// * `combo_indices` - Combo index for each player (usize::MAX for folded players)
+/// * `active_mask` - Bitmask of players in the showdown
+pub fn compute_multiway_equity_from_matchups(
+    matchups: &MatchupTable,
+    combo_indices: &[usize],
+    active_mask: u64,
+) -> Vec<f64> {
+    let hand_ranks: Vec<u32> = combo_indices
+        .iter()
+        .map(|&idx| {
+            if idx == usize::MAX {
+                u32::MAX
+            } else {
+                matchups.hand_ranks[idx]
+            }
+        })
+        .collect();
+
+    compute_multiway_equity(&hand_ranks, active_mask)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,5 +583,63 @@ mod tests {
 
         let rank = evaluate_7cards(&cards);
         assert_eq!(hand_category_name(rank), "Straight Flush");
+    }
+
+    #[test]
+    fn test_multiway_equity_headsup() {
+        // Player 0 has better hand, player 1 has worse hand
+        let hand_ranks = vec![100, 50];
+        let active_mask = 0b11; // Both active
+
+        let equity = compute_multiway_equity(&hand_ranks, active_mask);
+        assert_eq!(equity[0], 1.0);
+        assert_eq!(equity[1], 0.0);
+    }
+
+    #[test]
+    fn test_multiway_equity_tie() {
+        // Both players have same hand
+        let hand_ranks = vec![100, 100];
+        let active_mask = 0b11;
+
+        let equity = compute_multiway_equity(&hand_ranks, active_mask);
+        assert!((equity[0] - 0.5).abs() < 0.001);
+        assert!((equity[1] - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_multiway_equity_3way() {
+        // Player 0 has best hand, player 1 middle, player 2 worst
+        let hand_ranks = vec![100, 80, 60];
+        let active_mask = 0b111; // All three active
+
+        let equity = compute_multiway_equity(&hand_ranks, active_mask);
+        assert_eq!(equity[0], 1.0); // Best hand wins
+        assert_eq!(equity[1], 0.0);
+        assert_eq!(equity[2], 0.0);
+    }
+
+    #[test]
+    fn test_multiway_equity_folded_player() {
+        // 3 players, but player 1 folded
+        let hand_ranks = vec![100, u32::MAX, 60];
+        let active_mask = 0b101; // Players 0 and 2 active
+
+        let equity = compute_multiway_equity(&hand_ranks, active_mask);
+        assert_eq!(equity[0], 1.0);
+        assert_eq!(equity[1], 0.0); // Folded
+        assert_eq!(equity[2], 0.0);
+    }
+
+    #[test]
+    fn test_multiway_equity_single_winner() {
+        // Only one player left
+        let hand_ranks = vec![100, u32::MAX, u32::MAX];
+        let active_mask = 0b001;
+
+        let equity = compute_multiway_equity(&hand_ranks, active_mask);
+        assert_eq!(equity[0], 1.0);
+        assert_eq!(equity[1], 0.0);
+        assert_eq!(equity[2], 0.0);
     }
 }

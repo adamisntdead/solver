@@ -41,6 +41,9 @@ pub struct PostflopConfig {
 /// The game structure is:
 /// 1. Root: Chance node that "deals" hands (enumerates matchups)
 /// 2. Each matchup leads to the betting tree
+///
+/// Supports 2-6 players. For n players, ranges and stacks are indexed by
+/// tree player ID (0 = first to act postflop, n-1 = last to act).
 pub struct PostflopGame {
     /// The flattened action tree.
     pub tree: Arc<IndexedActionTree>,
@@ -52,24 +55,31 @@ pub struct PostflopGame {
     pub matchups: Option<Arc<MatchupTable>>,
     /// Hand isomorphism for bucket mapping (only for river boards).
     pub isomorphism: Option<Arc<RiverIsomorphism>>,
-    /// OOP player's range.
-    pub oop_range: Range,
-    /// IP player's range.
-    pub ip_range: Range,
+    /// Ranges for each player (indexed by tree player ID).
+    pub ranges: Vec<Range>,
+    /// Starting stacks for each player (indexed by tree player ID).
+    pub stacks: Vec<i32>,
+    /// Number of players.
+    num_players: usize,
     /// Starting pot.
     pub pot: i32,
-    /// Effective stack.
-    pub effective_stack: i32,
     /// Number of canonical buckets.
     num_buckets: usize,
-    /// Valid matchup pairs as (oop_combo_idx, ip_combo_idx, weight).
+    /// Valid matchups for 2-player games: (oop_combo_idx, ip_combo_idx, weight).
+    /// For n-player games, use `valid_matchups_multiway` instead.
     valid_matchups: Vec<(usize, usize, f32)>,
+    /// Valid matchups for n-player games: (combo_indices, weight).
+    /// Each entry is a tuple of combo indices for each player plus the weight.
+    valid_matchups_multiway: Vec<(Vec<usize>, f32)>,
     /// Total weight of all matchups (for normalization).
     total_weight: f32,
 }
 
 impl PostflopGame {
-    /// Create a new postflop game.
+    /// Create a new postflop game for 2 players (heads-up).
+    ///
+    /// This is the legacy API for backward compatibility. For n-player games,
+    /// use `PostflopGame::new_multiway()`.
     ///
     /// Accepts boards with 3-5 cards:
     /// - 5 cards (river): precomputes matchup table and isomorphism
@@ -82,6 +92,45 @@ impl PostflopGame {
         pot: i32,
         effective_stack: i32,
     ) -> Self {
+        // Convert to n-player format (OOP = player 1, IP = player 0 in tree indexing)
+        // Note: Player 0 is IP (acts second), Player 1 is OOP (acts first)
+        let ranges = vec![ip_range, oop_range];
+        let stacks = vec![effective_stack, effective_stack];
+
+        Self::new_multiway(tree, board, ranges, stacks, pot)
+    }
+
+    /// Create a new postflop game for 2-6 players.
+    ///
+    /// Accepts boards with 3-5 cards:
+    /// - 5 cards (river): precomputes matchup table and isomorphism
+    /// - 3-4 cards (flop/turn): valid combos from board mask only
+    ///
+    /// # Arguments
+    /// * `tree` - The indexed action tree
+    /// * `board` - The board (3-5 cards)
+    /// * `ranges` - Range for each player (indexed by tree player ID)
+    /// * `stacks` - Starting stack for each player
+    /// * `pot` - Starting pot size
+    pub fn new_multiway(
+        tree: IndexedActionTree,
+        board: Board,
+        ranges: Vec<Range>,
+        stacks: Vec<i32>,
+        pot: i32,
+    ) -> Self {
+        let num_players = ranges.len();
+        assert!(
+            num_players >= 2 && num_players <= 6,
+            "Number of players must be 2-6, got {}",
+            num_players
+        );
+        assert_eq!(
+            stacks.len(),
+            num_players,
+            "Stacks length must match ranges length"
+        );
+
         let starting_street = match board.len() {
             3 => Street::Flop,
             4 => Street::Turn,
@@ -102,37 +151,16 @@ impl PostflopGame {
         };
 
         // Precompute valid matchups with weights
-        let mut valid_matchups = Vec::new();
-        let mut total_weight = 0.0f32;
-
-        for oop_idx in 0..NUM_COMBOS {
-            let oop_weight = oop_range.weights[oop_idx];
-            if oop_weight == 0.0 {
-                continue;
-            }
-            let oop_combo = Combo::from_index(oop_idx);
-            if oop_combo.conflicts_with_mask(board.mask) {
-                continue;
-            }
-
-            for ip_idx in 0..NUM_COMBOS {
-                let ip_weight = ip_range.weights[ip_idx];
-                if ip_weight == 0.0 {
-                    continue;
-                }
-                let ip_combo = Combo::from_index(ip_idx);
-                if ip_combo.conflicts_with_mask(board.mask) {
-                    continue;
-                }
-                if oop_combo.conflicts_with(&ip_combo) {
-                    continue;
-                }
-
-                let weight = oop_weight * ip_weight;
-                valid_matchups.push((oop_idx, ip_idx, weight));
-                total_weight += weight;
-            }
-        }
+        let (valid_matchups, valid_matchups_multiway, total_weight) = if num_players == 2 {
+            // Use efficient 2-player matchup enumeration
+            let (matchups_2p, weight) =
+                enumerate_2player_matchups(&board, &ranges[0], &ranges[1]);
+            (matchups_2p, Vec::new(), weight)
+        } else {
+            // Use n-player matchup enumeration
+            let (matchups_np, weight) = enumerate_nplayer_matchups(&board, &ranges);
+            (Vec::new(), matchups_np, weight)
+        };
 
         PostflopGame {
             tree,
@@ -140,27 +168,57 @@ impl PostflopGame {
             starting_street,
             matchups,
             isomorphism,
-            oop_range,
-            ip_range,
+            ranges,
+            stacks,
+            num_players,
             pot,
-            effective_stack,
             num_buckets,
             valid_matchups,
+            valid_matchups_multiway,
             total_weight,
         }
     }
 
-    /// Get the number of valid matchup pairs.
-    pub fn num_matchups(&self) -> usize {
-        self.valid_matchups.len()
+    /// Get range for a specific player.
+    pub fn range(&self, player: usize) -> &Range {
+        &self.ranges[player]
     }
 
-    /// Iterate over valid matchups.
+    /// Get the effective stack (for 2-player games, returns the first player's stack).
+    pub fn effective_stack(&self) -> i32 {
+        self.stacks[0]
+    }
+
+    /// Get the OOP range (player 1 in tree indexing). For backward compatibility.
+    pub fn oop_range(&self) -> &Range {
+        &self.ranges[1]
+    }
+
+    /// Get the IP range (player 0 in tree indexing). For backward compatibility.
+    pub fn ip_range(&self) -> &Range {
+        &self.ranges[0]
+    }
+
+    /// Get the number of valid matchup pairs (for 2-player games).
+    pub fn num_matchups(&self) -> usize {
+        if self.num_players == 2 {
+            self.valid_matchups.len()
+        } else {
+            self.valid_matchups_multiway.len()
+        }
+    }
+
+    /// Iterate over valid matchups (for 2-player games only).
     pub fn matchups(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.valid_matchups.iter().map(|&(o, i, _)| (o, i))
     }
 
-    /// Get the root node for a specific matchup.
+    /// Iterate over valid multiway matchups.
+    pub fn matchups_multiway(&self) -> impl Iterator<Item = &(Vec<usize>, f32)> {
+        self.valid_matchups_multiway.iter()
+    }
+
+    /// Get the root node for a specific matchup (2-player only).
     ///
     /// Only supported for river boards (requires matchup table).
     pub fn root_for_matchup(&self, oop_combo: usize, ip_combo: usize) -> PostflopNode {
@@ -174,7 +232,7 @@ impl PostflopGame {
                 ip_combo,
             },
             pot: self.pot,
-            stacks: [self.effective_stack, self.effective_stack],
+            stacks: [self.stacks[0], self.stacks[1]],
             num_buckets: self.num_buckets,
             num_matchups: self.valid_matchups.len(),
             valid_matchups: self.valid_matchups.clone(),
@@ -183,13 +241,34 @@ impl PostflopGame {
     }
 
     /// Get the weight for a matchup (product of range weights).
+    /// For 2-player games.
     pub fn matchup_weight(&self, oop_combo: usize, ip_combo: usize) -> f32 {
-        self.oop_range.weights[oop_combo] * self.ip_range.weights[ip_combo]
+        self.ranges[1].weights[oop_combo] * self.ranges[0].weights[ip_combo]
     }
 
     /// Compute the total weight of all matchups.
     pub fn total_matchup_weight(&self) -> f32 {
         self.total_weight
+    }
+
+    /// Get the number of players.
+    pub fn get_num_players(&self) -> usize {
+        self.num_players
+    }
+
+    /// Check if this is a 2-player game.
+    pub fn is_heads_up(&self) -> bool {
+        self.num_players == 2
+    }
+
+    /// Get valid matchups for 2-player games (returns reference).
+    pub fn valid_matchups_2p(&self) -> &[(usize, usize, f32)] {
+        &self.valid_matchups
+    }
+
+    /// Get valid matchups for n-player games (returns reference).
+    pub fn valid_matchups_np(&self) -> &[(Vec<usize>, f32)] {
+        &self.valid_matchups_multiway
     }
 }
 
@@ -198,17 +277,30 @@ impl Game for PostflopGame {
 
     /// Get the root node.
     ///
-    /// Only supported for river boards (the trait-based Game interface requires
-    /// matchup tables). Use `PostflopSolver` for multi-street solving.
+    /// Only supported for 2-player river boards (the trait-based Game interface
+    /// requires matchup tables). Use `PostflopSolver` for multi-street solving
+    /// and multiway games.
     fn root(&self) -> PostflopNode {
+        assert!(
+            self.num_players == 2,
+            "Game::root only supported for 2-player games"
+        );
         // Root is a "dealing" chance node
         PostflopNode {
             tree: Arc::clone(&self.tree),
-            matchups: Arc::clone(self.matchups.as_ref().expect("Game::root requires river board")),
-            isomorphism: Arc::clone(self.isomorphism.as_ref().expect("Game::root requires river board")),
+            matchups: Arc::clone(
+                self.matchups
+                    .as_ref()
+                    .expect("Game::root requires river board"),
+            ),
+            isomorphism: Arc::clone(
+                self.isomorphism
+                    .as_ref()
+                    .expect("Game::root requires river board"),
+            ),
             state: NodeState::Dealing,
             pot: self.pot,
-            stacks: [self.effective_stack, self.effective_stack],
+            stacks: [self.stacks[0], self.stacks[1]],
             num_buckets: self.num_buckets,
             num_matchups: self.valid_matchups.len(),
             valid_matchups: self.valid_matchups.clone(),
@@ -217,13 +309,147 @@ impl Game for PostflopGame {
     }
 
     fn num_players(&self) -> usize {
-        2
+        self.num_players
     }
 
     fn num_info_sets(&self) -> usize {
-        // 2 players * tree_size * num_buckets
-        2 * self.tree.len() * self.num_buckets
+        // num_players * tree_size * num_buckets
+        self.num_players * self.tree.len() * self.num_buckets
     }
+}
+
+// === Helper functions for matchup enumeration ===
+
+/// Enumerate valid matchups for 2-player games.
+fn enumerate_2player_matchups(
+    board: &Board,
+    range_0: &Range,
+    range_1: &Range,
+) -> (Vec<(usize, usize, f32)>, f32) {
+    let mut valid_matchups = Vec::new();
+    let mut total_weight = 0.0f32;
+
+    for idx_1 in 0..NUM_COMBOS {
+        let weight_1 = range_1.weights[idx_1];
+        if weight_1 == 0.0 {
+            continue;
+        }
+        let combo_1 = Combo::from_index(idx_1);
+        if combo_1.conflicts_with_mask(board.mask) {
+            continue;
+        }
+
+        for idx_0 in 0..NUM_COMBOS {
+            let weight_0 = range_0.weights[idx_0];
+            if weight_0 == 0.0 {
+                continue;
+            }
+            let combo_0 = Combo::from_index(idx_0);
+            if combo_0.conflicts_with_mask(board.mask) {
+                continue;
+            }
+            if combo_1.conflicts_with(&combo_0) {
+                continue;
+            }
+
+            let weight = weight_1 * weight_0;
+            valid_matchups.push((idx_1, idx_0, weight));
+            total_weight += weight;
+        }
+    }
+
+    (valid_matchups, total_weight)
+}
+
+/// Enumerate valid matchups for n-player games.
+///
+/// Uses recursive enumeration to find all valid combinations of hands
+/// where no two players share any cards.
+fn enumerate_nplayer_matchups(
+    board: &Board,
+    ranges: &[Range],
+) -> (Vec<(Vec<usize>, f32)>, f32) {
+    let num_players = ranges.len();
+
+    // Pre-filter valid combos per player
+    let valid_combos: Vec<Vec<(usize, f32)>> = ranges
+        .iter()
+        .map(|range| {
+            (0..NUM_COMBOS)
+                .filter_map(|idx| {
+                    let weight = range.weights[idx];
+                    if weight == 0.0 {
+                        return None;
+                    }
+                    let combo = Combo::from_index(idx);
+                    if combo.conflicts_with_mask(board.mask) {
+                        return None;
+                    }
+                    Some((idx, weight))
+                })
+                .collect()
+        })
+        .collect();
+
+    let mut valid_matchups = Vec::new();
+    let mut total_weight = 0.0f32;
+
+    // Recursive enumeration
+    let mut current_combos = vec![0usize; num_players];
+    let current_weight = 1.0f32;
+
+    fn enumerate_recursive(
+        player: usize,
+        valid_combos: &[Vec<(usize, f32)>],
+        current_combos: &mut Vec<usize>,
+        current_weight: f32,
+        used_cards: u64,
+        valid_matchups: &mut Vec<(Vec<usize>, f32)>,
+        total_weight: &mut f32,
+    ) {
+        if player == valid_combos.len() {
+            // All players assigned - valid matchup
+            valid_matchups.push((current_combos.clone(), current_weight));
+            *total_weight += current_weight;
+            return;
+        }
+
+        for &(idx, weight) in &valid_combos[player] {
+            let combo = Combo::from_index(idx);
+            let combo_mask = (1u64 << combo.c0) | (1u64 << combo.c1);
+
+            // Check card conflicts with already assigned players
+            if (combo_mask & used_cards) != 0 {
+                continue;
+            }
+
+            current_combos[player] = idx;
+            let new_weight = current_weight * weight;
+            let new_used = used_cards | combo_mask;
+
+            enumerate_recursive(
+                player + 1,
+                valid_combos,
+                current_combos,
+                new_weight,
+                new_used,
+                valid_matchups,
+                total_weight,
+            );
+        }
+    }
+
+    enumerate_recursive(
+        0,
+        &valid_combos,
+        &mut current_combos,
+        current_weight,
+        board.mask,
+        &mut valid_matchups,
+        &mut total_weight,
+    );
+
+    (valid_matchups, total_weight)
 }
 
 /// State of a postflop node.

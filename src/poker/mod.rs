@@ -39,7 +39,7 @@ pub mod range_parser;
 pub use board_parser::*;
 pub use hands::{Board, Card, Combo, Range, NUM_COMBOS};
 pub use isomorphism::{RiverIsomorphism, SuitMapping};
-pub use matchups::MatchupTable;
+pub use matchups::{compute_multiway_equity, MatchupTable};
 pub use postflop_game::{PostflopConfig, PostflopGame, PostflopNode};
 pub use postflop_solver::PostflopSolver;
 pub use range_parser::*;

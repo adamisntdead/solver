@@ -434,20 +434,41 @@ pub fn get_default_config() -> String {
 // === Solver WASM Functions ===
 
 /// JSON config for creating a solver.
+///
+/// Supports two formats:
+/// 1. Legacy 2-player: `oop_range`, `ip_range`, `effective_stack`
+/// 2. N-player: `ranges`, `stacks`
+///
+/// The N-player format takes precedence if `ranges` is provided.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SolverConfig {
     /// Board string (e.g., "KhQsJs2c3d" for river, "KhQsJs2c" for turn)
     pub board: String,
-    /// OOP range string (e.g., "AA,KK,QQ,AKs")
-    pub oop_range: String,
-    /// IP range string (e.g., "AA,KK,AKs,AQs")
-    pub ip_range: String,
+
     /// Starting pot size
     pub pot: i32,
-    /// Effective stack size
-    pub effective_stack: i32,
+
     /// Tree configuration (reuses SpotConfig)
     pub tree_config: SpotConfig,
+
+    // === Legacy 2-player format ===
+    /// OOP range string (e.g., "AA,KK,QQ,AKs") - for 2-player games
+    #[serde(default)]
+    pub oop_range: Option<String>,
+    /// IP range string (e.g., "AA,KK,AKs,AQs") - for 2-player games
+    #[serde(default)]
+    pub ip_range: Option<String>,
+    /// Effective stack size - for 2-player games
+    #[serde(default)]
+    pub effective_stack: Option<i32>,
+
+    // === N-player format ===
+    /// Range strings for each player (indexed by tree player ID)
+    #[serde(default)]
+    pub ranges: Option<Vec<String>>,
+    /// Stack sizes for each player
+    #[serde(default)]
+    pub stacks: Option<Vec<i32>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -520,41 +541,115 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
         }
     };
 
-    // Parse ranges
-    let oop_range = match parse_range(&solver_config.oop_range) {
-        Ok(r) => r,
-        Err(e) => {
-            return CreateSolverResult {
-                success: false,
-                error: Some(format!("Invalid OOP range: {}", e)),
-                num_ip_hands: None,
-                num_oop_hands: None,
-            }
-        }
-    };
-
-    let ip_range = match parse_range(&solver_config.ip_range) {
-        Ok(r) => r,
-        Err(e) => {
-            return CreateSolverResult {
-                success: false,
-                error: Some(format!("Invalid IP range: {}", e)),
-                num_ip_hands: None,
-                num_oop_hands: None,
-            }
-        }
-    };
-
-    // Create game and solver
     let pot = solver_config.pot;
-    let game = PostflopGame::new(
-        indexed_tree,
-        board,
-        oop_range,
-        ip_range,
-        pot,
-        solver_config.effective_stack,
-    );
+
+    // Determine if using n-player or legacy 2-player format
+    let game = if let Some(ref range_strings) = solver_config.ranges {
+        // N-player format
+        let num_players = range_strings.len();
+        if num_players < 2 || num_players > 6 {
+            return CreateSolverResult {
+                success: false,
+                error: Some(format!("Number of players must be 2-6, got {}", num_players)),
+                num_ip_hands: None,
+                num_oop_hands: None,
+            };
+        }
+
+        // Parse ranges
+        let mut ranges = Vec::with_capacity(num_players);
+        for (i, range_str) in range_strings.iter().enumerate() {
+            match parse_range(range_str) {
+                Ok(r) => ranges.push(r),
+                Err(e) => {
+                    return CreateSolverResult {
+                        success: false,
+                        error: Some(format!("Invalid range for player {}: {}", i, e)),
+                        num_ip_hands: None,
+                        num_oop_hands: None,
+                    }
+                }
+            }
+        }
+
+        // Get stacks
+        let stacks = match &solver_config.stacks {
+            Some(s) => {
+                if s.len() != num_players {
+                    return CreateSolverResult {
+                        success: false,
+                        error: Some(format!(
+                            "Stacks length ({}) must match ranges length ({})",
+                            s.len(),
+                            num_players
+                        )),
+                        num_ip_hands: None,
+                        num_oop_hands: None,
+                    };
+                }
+                s.clone()
+            }
+            None => {
+                // Use effective_stack if provided, else default
+                let default_stack = solver_config.effective_stack.unwrap_or(100);
+                vec![default_stack; num_players]
+            }
+        };
+
+        PostflopGame::new_multiway(indexed_tree, board, ranges, stacks, pot)
+    } else {
+        // Legacy 2-player format
+        let oop_range_str = match &solver_config.oop_range {
+            Some(s) => s.as_str(),
+            None => {
+                return CreateSolverResult {
+                    success: false,
+                    error: Some("Missing oop_range (or use 'ranges' for n-player format)".to_string()),
+                    num_ip_hands: None,
+                    num_oop_hands: None,
+                }
+            }
+        };
+
+        let ip_range_str = match &solver_config.ip_range {
+            Some(s) => s.as_str(),
+            None => {
+                return CreateSolverResult {
+                    success: false,
+                    error: Some("Missing ip_range (or use 'ranges' for n-player format)".to_string()),
+                    num_ip_hands: None,
+                    num_oop_hands: None,
+                }
+            }
+        };
+
+        let oop_range = match parse_range(oop_range_str) {
+            Ok(r) => r,
+            Err(e) => {
+                return CreateSolverResult {
+                    success: false,
+                    error: Some(format!("Invalid OOP range: {}", e)),
+                    num_ip_hands: None,
+                    num_oop_hands: None,
+                }
+            }
+        };
+
+        let ip_range = match parse_range(ip_range_str) {
+            Ok(r) => r,
+            Err(e) => {
+                return CreateSolverResult {
+                    success: false,
+                    error: Some(format!("Invalid IP range: {}", e)),
+                    num_ip_hands: None,
+                    num_oop_hands: None,
+                }
+            }
+        };
+
+        let effective_stack = solver_config.effective_stack.unwrap_or(100);
+        PostflopGame::new(indexed_tree, board, oop_range, ip_range, pot, effective_stack)
+    };
 
     let solver = PostflopSolver::new(&game);
     let num_ip = solver.num_hands(0);
