@@ -1,1 +1,16 @@
 /target
+equity_table.bin
+*.bin
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# WASM build artifacts
+webapp/pkg/
