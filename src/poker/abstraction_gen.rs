@@ -353,41 +353,82 @@ fn generate_deterministic_abstraction(
 }
 
 /// Generate EHS-based abstraction.
+///
+/// Uses parallel processing for board enumeration.
 #[cfg(feature = "rand")]
 fn generate_ehs_abstraction(
     config: &AbstractionConfig,
     boards: &[crate::poker::indexer::CanonicalBoard],
 ) -> GeneratedAbstraction {
-    // Collect all EHS values
-    let mut all_ehs = Vec::new();
-    let mut board_ranges: Vec<(usize, usize)> = Vec::new(); // (start, num_hands) per board
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    for (i, cb) in boards.iter().enumerate() {
-        let board = cb.to_board();
-        let ehs_values = if config.ehs_squared || config.abstraction_type == AbstractionType::EHSSquared {
-            crate::poker::ehs::compute_all_ehs_squared(&board.cards)
-        } else {
-            compute_all_ehs(&board.cards)
-        };
+    #[cfg(feature = "rayon")]
+    use rayon::prelude::*;
 
-        let indexer = SingleBoardIndexer::new(&board);
-        let start = all_ehs.len();
+    let total_boards = boards.len();
+    let processed = AtomicUsize::new(0);
+    let use_squared = config.ehs_squared || config.abstraction_type == AbstractionType::EHSSquared;
 
-        // Collect EHS for each isomorphic hand
-        let mut iso_ehs = vec![0.0f32; indexer.num_iso_hands()];
-        for (combo_idx, bucket) in indexer.valid_combos() {
-            if iso_ehs[bucket as usize] == 0.0 {
-                iso_ehs[bucket as usize] = ehs_values[combo_idx];
+    // Process boards in parallel
+    #[cfg(feature = "rayon")]
+    let board_ehs: Vec<Vec<f32>> = boards
+        .par_iter()
+        .map(|cb| {
+            let board = cb.to_board();
+            let ehs_values = if use_squared {
+                crate::poker::ehs::compute_all_ehs_squared(&board.cards)
+            } else {
+                compute_all_ehs(&board.cards)
+            };
+
+            let indexer = SingleBoardIndexer::new(&board);
+            let mut iso_ehs = vec![0.0f32; indexer.num_iso_hands()];
+            for (combo_idx, bucket) in indexer.valid_combos() {
+                if iso_ehs[bucket as usize] == 0.0 {
+                    iso_ehs[bucket as usize] = ehs_values[combo_idx];
+                }
             }
-        }
 
-        all_ehs.extend(iso_ehs);
-        board_ranges.push((start, indexer.num_iso_hands()));
+            // Update progress
+            let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
+            if let Some(ref callback) = config.progress_callback {
+                callback((done * 50 / total_boards) as u32);
+            }
 
-        if let Some(ref cb) = config.progress_callback {
-            cb((i * 50 / boards.len()) as u32);
-        }
-    }
+            iso_ehs
+        })
+        .collect();
+
+    #[cfg(not(feature = "rayon"))]
+    let board_ehs: Vec<Vec<f32>> = boards
+        .iter()
+        .enumerate()
+        .map(|(i, cb)| {
+            let board = cb.to_board();
+            let ehs_values = if use_squared {
+                crate::poker::ehs::compute_all_ehs_squared(&board.cards)
+            } else {
+                compute_all_ehs(&board.cards)
+            };
+
+            let indexer = SingleBoardIndexer::new(&board);
+            let mut iso_ehs = vec![0.0f32; indexer.num_iso_hands()];
+            for (combo_idx, bucket) in indexer.valid_combos() {
+                if iso_ehs[bucket as usize] == 0.0 {
+                    iso_ehs[bucket as usize] = ehs_values[combo_idx];
+                }
+            }
+
+            if let Some(ref callback) = config.progress_callback {
+                callback((i * 50 / total_boards) as u32);
+            }
+
+            iso_ehs
+        })
+        .collect();
+
+    // Flatten all EHS values
+    let all_ehs: Vec<f32> = board_ehs.into_iter().flatten().collect();
 
     // Cluster all EHS values
     let result = kmeans_1d(&all_ehs, config.num_buckets);
@@ -407,26 +448,63 @@ fn generate_ehs_abstraction(
 }
 
 /// Generate WinSplit abstraction (river only).
+///
+/// Uses parallel processing for board enumeration and pre-computes hand ranks
+/// for O(1) win/split comparison.
 #[cfg(feature = "rand")]
 fn generate_winsplit_abstraction(
     config: &AbstractionConfig,
     boards: &[crate::poker::indexer::CanonicalBoard],
 ) -> GeneratedAbstraction {
-    let mut all_features: Vec<[f32; 2]> = Vec::new();
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    for (i, cb) in boards.iter().enumerate() {
-        let board = cb.to_board();
-        let indexer = SingleBoardIndexer::new(&board);
+    #[cfg(feature = "rayon")]
+    use rayon::prelude::*;
 
-        for (combo_idx, _) in indexer.valid_combos() {
-            let combo = Combo::from_index(combo_idx);
-            let features = compute_winsplit_features(combo, &board.cards);
-            all_features.push(features);
-        }
+    let total_boards = boards.len();
+    let processed = AtomicUsize::new(0);
 
-        if let Some(ref cb) = config.progress_callback {
-            cb((i * 50 / boards.len()) as u32);
-        }
+    // Process boards in parallel, computing features for each
+    #[cfg(feature = "rayon")]
+    let board_features: Vec<Vec<[f32; 2]>> = boards
+        .par_iter()
+        .map(|cb| {
+            let board = cb.to_board();
+            let indexer = SingleBoardIndexer::new(&board);
+            let features = compute_board_winsplit_fast(&board, &indexer);
+
+            // Update progress
+            let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
+            if let Some(ref callback) = config.progress_callback {
+                callback((done * 50 / total_boards) as u32);
+            }
+
+            features
+        })
+        .collect();
+
+    #[cfg(not(feature = "rayon"))]
+    let board_features: Vec<Vec<[f32; 2]>> = boards
+        .iter()
+        .enumerate()
+        .map(|(i, cb)| {
+            let board = cb.to_board();
+            let indexer = SingleBoardIndexer::new(&board);
+            let features = compute_board_winsplit_fast(&board, &indexer);
+
+            if let Some(ref callback) = config.progress_callback {
+                callback((i * 50 / total_boards) as u32);
+            }
+
+            features
+        })
+        .collect();
+
+    // Flatten all features
+    let all_features: Vec<[f32; 2]> = board_features.into_iter().flatten().collect();
+
+    if let Some(ref callback) = config.progress_callback {
+        callback(50);
     }
 
     let kmeans_config = KMeansConfig {
@@ -448,32 +526,155 @@ fn generate_winsplit_abstraction(
     }
 }
 
+/// Compute WinSplit features for all hands on a board using pre-computed ranks.
+///
+/// This is much faster than calling compute_winsplit_features for each hand
+/// because we compute all 1326 hand ranks once and then compare in O(1).
+#[cfg(feature = "rand")]
+fn compute_board_winsplit_fast(
+    board: &crate::poker::hands::Board,
+    indexer: &SingleBoardIndexer,
+) -> Vec<[f32; 2]> {
+    use crate::poker::hands::NUM_COMBOS;
+    use crate::poker::matchups::evaluate_7cards;
+
+    // Pre-compute all hand ranks (7-card evaluation)
+    let mut hand_ranks = vec![0u32; NUM_COMBOS];
+    for combo_idx in 0..NUM_COMBOS {
+        let combo = Combo::from_index(combo_idx);
+        if combo.conflicts_with_mask(board.mask) {
+            continue;
+        }
+        let cards = [
+            board.cards[0],
+            board.cards[1],
+            board.cards[2],
+            board.cards[3],
+            board.cards[4],
+            combo.c0,
+            combo.c1,
+        ];
+        hand_ranks[combo_idx] = evaluate_7cards(&cards);
+    }
+
+    // Compute features for each isomorphic hand
+    let mut features = Vec::with_capacity(indexer.num_iso_hands());
+
+    for (combo_idx, _) in indexer.valid_combos() {
+        let combo = Combo::from_index(combo_idx);
+        let our_rank = hand_ranks[combo_idx];
+
+        let mut wins = 0u32;
+        let mut splits = 0u32;
+        let mut total = 0u32;
+
+        let combined_mask = board.mask | combo.to_mask();
+
+        // Compare against all opponent hands using pre-computed ranks
+        for opp_idx in 0..NUM_COMBOS {
+            let opp = Combo::from_index(opp_idx);
+            if opp.to_mask() & combined_mask != 0 {
+                continue;
+            }
+
+            let opp_rank = hand_ranks[opp_idx];
+            total += 1;
+
+            if our_rank > opp_rank {
+                wins += 1;
+            } else if our_rank == opp_rank {
+                splits += 1;
+            }
+        }
+
+        if total > 0 {
+            features.push([
+                wins as f32 / total as f32,
+                splits as f32 / total as f32,
+            ]);
+        } else {
+            features.push([0.0, 0.0]);
+        }
+    }
+
+    features
+}
+
 /// Generate EMD-based abstraction.
+///
+/// Uses parallel processing for board enumeration.
 #[cfg(feature = "rand")]
 fn generate_emd_abstraction(
     config: &AbstractionConfig,
     boards: &[crate::poker::indexer::CanonicalBoard],
 ) -> GeneratedAbstraction {
-    let mut all_features: Vec<[f32; EMD_NUM_BINS]> = Vec::new();
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    for (i, cb) in boards.iter().enumerate() {
-        let board = cb.to_board();
-        let indexer = SingleBoardIndexer::new(&board);
+    #[cfg(feature = "rayon")]
+    use rayon::prelude::*;
 
-        for (combo_idx, _) in indexer.valid_combos() {
-            let combo = Combo::from_index(combo_idx);
-            let hist = if config.abstraction_type == AbstractionType::AsymEMD {
-                compute_asymmetric_emd_features(combo, &board.cards)
-            } else {
-                compute_emd_features(combo, &board.cards)
-            };
-            all_features.push(hist);
-        }
+    let total_boards = boards.len();
+    let processed = AtomicUsize::new(0);
+    let use_asym = config.abstraction_type == AbstractionType::AsymEMD;
 
-        if let Some(ref cb) = config.progress_callback {
-            cb((i * 50 / boards.len()) as u32);
-        }
-    }
+    // Process boards in parallel
+    #[cfg(feature = "rayon")]
+    let board_features: Vec<Vec<[f32; EMD_NUM_BINS]>> = boards
+        .par_iter()
+        .map(|cb| {
+            let board = cb.to_board();
+            let indexer = SingleBoardIndexer::new(&board);
+            let mut features = Vec::with_capacity(indexer.num_iso_hands());
+
+            for (combo_idx, _) in indexer.valid_combos() {
+                let combo = Combo::from_index(combo_idx);
+                let hist = if use_asym {
+                    compute_asymmetric_emd_features(combo, &board.cards)
+                } else {
+                    compute_emd_features(combo, &board.cards)
+                };
+                features.push(hist);
+            }
+
+            // Update progress
+            let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
+            if let Some(ref callback) = config.progress_callback {
+                callback((done * 50 / total_boards) as u32);
+            }
+
+            features
+        })
+        .collect();
+
+    #[cfg(not(feature = "rayon"))]
+    let board_features: Vec<Vec<[f32; EMD_NUM_BINS]>> = boards
+        .iter()
+        .enumerate()
+        .map(|(i, cb)| {
+            let board = cb.to_board();
+            let indexer = SingleBoardIndexer::new(&board);
+            let mut features = Vec::with_capacity(indexer.num_iso_hands());
+
+            for (combo_idx, _) in indexer.valid_combos() {
+                let combo = Combo::from_index(combo_idx);
+                let hist = if use_asym {
+                    compute_asymmetric_emd_features(combo, &board.cards)
+                } else {
+                    compute_emd_features(combo, &board.cards)
+                };
+                features.push(hist);
+            }
+
+            if let Some(ref callback) = config.progress_callback {
+                callback((i * 50 / total_boards) as u32);
+            }
+
+            features
+        })
+        .collect();
+
+    // Flatten all features
+    let all_features: Vec<[f32; EMD_NUM_BINS]> = board_features.into_iter().flatten().collect();
 
     let kmeans_config = KMeansConfig {
         num_buckets: config.num_buckets,
