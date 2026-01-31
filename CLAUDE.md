@@ -8,8 +8,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build
 cargo build --release
 
-# Run tests
-cargo test
+# Run tests (use release mode for faster convergence tests)
+cargo test --release
 
 # Run examples
 cargo run --example rps                    # Rock-Paper-Scissors (fast)
