@@ -1,15 +1,20 @@
-//! Poker CFR solver with hand isomorphism.
+//! Poker CFR solver with hand isomorphism and abstraction.
 //!
 //! This module provides a range-based CFR solver for postflop poker that:
 //! - Enumerates all valid (OOP combo, IP combo) pairs for faster convergence
 //! - Uses hand isomorphism to reduce the state space via suit canonicalization
+//! - Supports pluggable hand abstraction for additional compression
 //! - Integrates with the ActionTree betting structure from the tree module
 //!
 //! # Architecture
 //!
 //! - [`Combo`] and [`Range`]: Represent hole card combinations and weighted ranges
 //! - [`Board`]: Represents community cards with dead card tracking
-//! - [`RiverIsomorphism`]: Maps combos to canonical buckets for state reduction
+//! - [`BoardIsomorphism`]: Maps combos to canonical buckets (generalized for any board)
+//! - [`RiverIsomorphism`]: Legacy type for 5-card boards
+//! - [`HandAbstraction`]: Trait for hand abstraction (isomorphism + optional bucketing)
+//! - [`SuitIsomorphism`]: Lossless abstraction using suit symmetry
+//! - [`ComposedAbstraction`]: Two-layer abstraction (suit iso + info abstraction)
 //! - [`MatchupTable`]: Precomputes valid matchups and showdown results
 //! - [`PostflopGame`]: Implements the [`Game`] trait for CFR solving
 //!
@@ -28,6 +33,7 @@
 //! solver.train(&game, 1000);
 //! ```
 
+pub mod abstraction;
 pub mod board_parser;
 pub mod hands;
 pub mod isomorphism;
@@ -36,9 +42,12 @@ pub mod postflop_game;
 pub mod postflop_solver;
 pub mod range_parser;
 
+pub use abstraction::{
+    create_abstraction, compute_valid_cards, ComposedAbstraction, HandAbstraction, SuitIsomorphism,
+};
 pub use board_parser::*;
 pub use hands::{Board, Card, Combo, Range, NUM_COMBOS};
-pub use isomorphism::{RiverIsomorphism, SuitMapping};
+pub use isomorphism::{BoardIsomorphism, RiverIsomorphism, SuitMapping, INVALID_BUCKET};
 pub use matchups::{compute_multiway_equity, MatchupTable};
 pub use postflop_game::{PostflopConfig, PostflopGame, PostflopNode};
 pub use postflop_solver::PostflopSolver;
