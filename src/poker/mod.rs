@@ -36,6 +36,7 @@
 pub mod abstraction;
 pub mod abstraction_gen;
 pub mod abstraction_io;
+pub mod builtin_abstractions;
 pub mod board_parser;
 pub mod clustering;
 pub mod ehs;
@@ -54,6 +55,10 @@ pub use abstraction::{
 };
 pub use abstraction_gen::{AbstractionConfig, AbstractionType, GeneratedAbstraction};
 pub use abstraction_io::{load_abstraction, save_abstraction, AbstractionIOError};
+pub use builtin_abstractions::{
+    get_flop_abstraction, load_builtin_for_street, BuiltinAbstractionConfig,
+    FLOP_BUCKETS, RIVER_BUCKETS, TURN_BUCKETS,
+};
 pub use clustering::{DistanceMetric, KMeansConfig, KMeansResult};
 pub use ehs::{compute_all_ehs, compute_emd_features, compute_winsplit_features, EMD_NUM_BINS};
 pub use indexer::{ImperfectRecallIndexer, SingleBoardIndexer, Street};
@@ -62,7 +67,7 @@ pub use hands::{Board, Card, Combo, Range, NUM_COMBOS};
 pub use isomorphism::{BoardIsomorphism, RiverIsomorphism, SuitMapping, INVALID_BUCKET};
 pub use matchups::{compute_multiway_equity, MatchupTable};
 pub use postflop_game::{PostflopConfig, PostflopGame, PostflopNode};
-pub use postflop_solver::PostflopSolver;
+pub use postflop_solver::{LoadedAbstractions, PostflopSolver};
 pub use range_parser::*;
 
 // Re-export tree types for convenience

@@ -166,6 +166,13 @@
                             <label for="solver-iterations">Iterations</label>
                             <input type="number" id="solver-iterations" value="200" min="10" max="10000" step="50">
                         </div>
+                        <div class="form-group">
+                            <label for="abstraction-mode">Abstraction</label>
+                            <select id="abstraction-mode">
+                                <option value="none" selected>None (per-hand)</option>
+                                <option value="builtin">Built-in (faster)</option>
+                            </select>
+                        </div>
                     </div>
                     <div class="solver-controls">
                         <button id="solve-btn" class="btn btn-primary" disabled>Solve</button>

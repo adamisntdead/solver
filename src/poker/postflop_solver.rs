@@ -20,12 +20,63 @@
 //! - For 3-card boards (flop→turn→river): two-level chance nodes with
 //!   composite contexts (turn_idx * num_river + river_idx)
 
-use crate::poker::abstraction::{ComposedAbstraction, HandAbstraction};
+use crate::poker::abstraction::{
+    ComposedAbstraction, HandAbstraction, InfoAbstraction, SuitIsomorphism,
+};
+use crate::poker::abstraction_gen::GeneratedAbstraction;
 use crate::poker::hands::{Board, Combo, NUM_COMBOS};
 use crate::poker::isomorphism::INVALID_BUCKET;
 use crate::poker::matchups::evaluate_7cards;
 use crate::poker::postflop_game::PostflopGame;
 use crate::tree::{IndexedActionTree, IndexedNode, IndexedNodeType, Street};
+
+/// Pre-loaded abstraction data for each street.
+///
+/// Used to pass loaded abstraction files to the solver.
+#[derive(Default)]
+pub struct LoadedAbstractions {
+    /// Flop abstraction (optional)
+    pub flop: Option<GeneratedAbstraction>,
+    /// Turn abstraction (optional)
+    pub turn: Option<GeneratedAbstraction>,
+    /// River abstraction (optional)
+    pub river: Option<GeneratedAbstraction>,
+}
+
+impl LoadedAbstractions {
+    /// Create empty (no abstractions loaded).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the flop abstraction.
+    pub fn with_flop(mut self, abs: GeneratedAbstraction) -> Self {
+        self.flop = Some(abs);
+        self
+    }
+
+    /// Set the turn abstraction.
+    pub fn with_turn(mut self, abs: GeneratedAbstraction) -> Self {
+        self.turn = Some(abs);
+        self
+    }
+
+    /// Set the river abstraction.
+    pub fn with_river(mut self, abs: GeneratedAbstraction) -> Self {
+        self.river = Some(abs);
+        self
+    }
+
+    /// Get the abstraction for a given starting street.
+    pub fn get_for_street(&self, street: Street) -> Option<&GeneratedAbstraction> {
+        match street {
+            Street::Flop => self.flop.as_ref(),
+            Street::Turn => self.turn.as_ref(),
+            Street::River => self.river.as_ref(),
+            _ => None,
+        }
+    }
+}
 
 /// Info about a single hand (combo) for a player.
 #[derive(Clone)]
@@ -248,6 +299,192 @@ impl PostflopSolver {
                 } else {
                     // For multi-street, each context may have different bucket counts
                     // We use uniform allocation based on the first non-trivial context
+                    let ctx_index = if num_contexts > 1 { 1 } else { 0 };
+                    num_buckets_per_context[acting_player]
+                        .get(ctx_index)
+                        .copied()
+                        .unwrap_or(num_buckets_per_context[acting_player][0])
+                };
+
+                let size = num_contexts * num_actions * max_buckets;
+                regrets.push(vec![0.0f32; size]);
+                cum_strategy.push(vec![0.0f32; size]);
+            } else {
+                regrets.push(Vec::new());
+                cum_strategy.push(Vec::new());
+            }
+        }
+
+        PostflopSolver {
+            regrets,
+            cum_strategy,
+            hands,
+            abstractions,
+            num_buckets_per_context,
+            hand_to_bucket,
+            num_steps: vec![0; num_players],
+            num_players,
+            board,
+            starting_street,
+            valid_turn_cards,
+            valid_river_cards,
+            hand_rank_table,
+            node_num_contexts,
+        }
+    }
+
+    /// Create a new solver with pre-loaded hand abstractions.
+    ///
+    /// This allows using externally generated abstraction files instead of
+    /// the default suit isomorphism only.
+    ///
+    /// # Arguments
+    ///
+    /// * `game` - The postflop game configuration
+    /// * `loaded_abstractions` - Pre-loaded abstraction data for each street
+    pub fn new_with_abstraction(
+        game: &PostflopGame,
+        loaded_abstractions: Option<&LoadedAbstractions>,
+    ) -> Self {
+        // If no abstractions provided, delegate to standard constructor
+        let loaded_abs = match loaded_abstractions {
+            Some(abs) => abs,
+            None => return Self::new(game),
+        };
+
+        let tree = &game.tree;
+        let board = game.board.clone();
+        let starting_street = game.starting_street;
+        let is_river = starting_street == Street::River;
+        let is_flop = starting_street == Street::Flop;
+        let num_players = game.get_num_players();
+
+        // Build hand arrays for each player
+        let mut hands: Vec<Vec<HandInfo>> = vec![Vec::new(); num_players];
+
+        for player in 0..num_players {
+            let range = game.range(player);
+            for combo_idx in 0..NUM_COMBOS {
+                let weight = range.weights[combo_idx];
+                if weight == 0.0 {
+                    continue;
+                }
+                let combo = Combo::from_index(combo_idx);
+                if combo.conflicts_with_mask(board.mask) {
+                    continue;
+                }
+
+                let hand_rank = if is_river {
+                    game.matchups.as_ref().unwrap().hand_ranks[combo_idx]
+                } else {
+                    0
+                };
+
+                hands[player].push(HandInfo {
+                    combo_idx,
+                    c0: combo.c0,
+                    c1: combo.c1,
+                    initial_weight: weight,
+                    hand_rank,
+                });
+            }
+        }
+
+        // Compute valid cards and hand rank table for multi-street
+        let (valid_turn_cards, valid_river_cards, hand_rank_table) = if is_river {
+            (Vec::new(), Vec::new(), Vec::new())
+        } else if is_flop {
+            let mut cards: Vec<u8> = Vec::new();
+            for card in 0..52u8 {
+                if (board.mask >> card) & 1 == 0 {
+                    cards.push(card);
+                }
+            }
+            let table = precompute_hand_rank_table_flop(&board, &cards);
+            (cards.clone(), cards, table)
+        } else {
+            let mut river_cards: Vec<u8> = Vec::new();
+            for card in 0..52u8 {
+                if (board.mask >> card) & 1 == 0 {
+                    river_cards.push(card);
+                }
+            }
+            let table = precompute_hand_rank_table(&board, &river_cards);
+            (Vec::new(), river_cards, table)
+        };
+
+        // Build hand abstractions per player
+        let mut abstractions: Vec<ComposedAbstraction> = Vec::with_capacity(num_players);
+        let mut num_buckets_per_context: Vec<Vec<usize>> = Vec::with_capacity(num_players);
+        let mut hand_to_bucket: Vec<Vec<u16>> = Vec::with_capacity(num_players);
+
+        // Try to get the loaded abstraction for this street
+        let loaded_for_street = loaded_abs.get_for_street(starting_street);
+
+        for player in 0..num_players {
+            // Create base suit isomorphism
+            let iso = if is_river {
+                SuitIsomorphism::new(&board)
+            } else if is_flop {
+                SuitIsomorphism::for_flop_board(&board, &valid_turn_cards)
+            } else {
+                SuitIsomorphism::for_turn_board(&board, &valid_river_cards)
+            };
+
+            // Create composed abstraction with or without info abstraction
+            let abstraction = match loaded_for_street {
+                Some(gen_abs) => {
+                    // Convert GeneratedAbstraction to InfoAbstraction
+                    let info_abs = generated_to_info_abstraction(gen_abs);
+                    ComposedAbstraction::with_info_abstraction(iso, info_abs)
+                }
+                None => ComposedAbstraction::suit_iso_only(iso),
+            };
+
+            // Compute number of buckets per context
+            let num_contexts = abstraction.num_contexts();
+            let buckets_per_ctx: Vec<usize> = (0..num_contexts)
+                .map(|ctx| abstraction.num_buckets(ctx))
+                .collect();
+
+            // Build hand_idx -> bucket mapping for context 0
+            let h2b: Vec<u16> = hands[player]
+                .iter()
+                .map(|h| {
+                    abstraction
+                        .bucket(h.combo_idx, 0)
+                        .unwrap_or(INVALID_BUCKET)
+                })
+                .collect();
+
+            abstractions.push(abstraction);
+            num_buckets_per_context.push(buckets_per_ctx);
+            hand_to_bucket.push(h2b);
+        }
+
+        // Determine context count per node
+        let node_num_contexts = compute_node_contexts(
+            tree,
+            starting_street,
+            valid_turn_cards.len(),
+            valid_river_cards.len(),
+        );
+
+        // Allocate per-node storage using bucket counts
+        let num_nodes = tree.len();
+        let mut regrets = Vec::with_capacity(num_nodes);
+        let mut cum_strategy = Vec::with_capacity(num_nodes);
+
+        for node_idx in 0..num_nodes {
+            let node = tree.get(node_idx);
+            if node.is_player() {
+                let acting_player = node.player();
+                let num_actions = node.actions.len();
+                let num_contexts = node_num_contexts[node_idx];
+
+                let max_buckets = if num_contexts == 1 {
+                    num_buckets_per_context[acting_player][0]
+                } else {
                     let ctx_index = if num_contexts > 1 { 1 } else { 0 };
                     num_buckets_per_context[acting_player]
                         .get(ctx_index)
@@ -2428,6 +2665,42 @@ fn precompute_hand_rank_table_flop(board: &Board, valid_cards: &[u8]) -> Vec<Vec
         }
     }
     table
+}
+
+/// Convert a GeneratedAbstraction to a boxed InfoAbstraction.
+///
+/// This creates an info abstraction that maps isomorphic hand indices
+/// to the bucket assignments stored in the generated abstraction.
+fn generated_to_info_abstraction(generated: &GeneratedAbstraction) -> Box<dyn InfoAbstraction> {
+    Box::new(LoadedInfoAbstraction {
+        num_buckets: generated.num_buckets,
+        assignments: generated.assignments.clone(),
+    })
+}
+
+/// Info abstraction loaded from a GeneratedAbstraction.
+///
+/// Simply stores the bucket assignments and provides the InfoAbstraction interface.
+struct LoadedInfoAbstraction {
+    num_buckets: usize,
+    assignments: Vec<u16>,
+}
+
+impl InfoAbstraction for LoadedInfoAbstraction {
+    fn bucket(&self, iso_hand: usize, _context: usize) -> usize {
+        // The assignments are indexed by iso_hand (or global index for multi-board)
+        // For now, we do direct lookup. Multi-context support would need
+        // context-based indexing.
+        if iso_hand < self.assignments.len() {
+            self.assignments[iso_hand] as usize
+        } else {
+            0 // Fallback to bucket 0 if out of range
+        }
+    }
+
+    fn num_buckets(&self) -> usize {
+        self.num_buckets
+    }
 }
 
 #[cfg(test)]

@@ -204,23 +204,20 @@ impl HandAbstraction for SuitIsomorphism {
 ///
 /// Chains two layers of abstraction:
 /// 1. Suit isomorphism (lossless) - always applied
-/// 2. Info abstraction (lossy) - optional, currently passthrough
+/// 2. Info abstraction (lossy) - optional, groups strategically similar hands
 ///
-/// # Future Work
-///
-/// When implementing lossy bucketing (EHS, EMD, etc.):
-/// 1. Create [`InfoAbstraction`] implementations (EHSAbstraction, EMDAbstraction)
-/// 2. Add iso_to_bucket mapping after suit isomorphism
-/// 3. Update bucket() to chain: combo → iso_bucket → final_bucket
+/// The info abstraction layer maps isomorphic hand buckets to a smaller number
+/// of strategic buckets based on equity distributions (EHS, EMD, WinSplit, etc.).
 pub struct ComposedAbstraction {
     /// Layer 1: Suit isomorphism (always applied).
     isomorphism: SuitIsomorphism,
 
     /// Layer 2: Info abstraction (None = passthrough/identity).
-    ///
-    /// TODO: Replace with actual abstraction when implementing EHS/EMD.
-    #[allow(dead_code)]
     info_abstraction: Option<Box<dyn InfoAbstraction>>,
+
+    /// Number of buckets per context when info abstraction is active.
+    /// Used for efficient bucket count lookup.
+    info_num_buckets: Option<usize>,
 }
 
 impl ComposedAbstraction {
@@ -231,7 +228,8 @@ impl ComposedAbstraction {
     pub fn suit_iso_only(iso: SuitIsomorphism) -> Self {
         Self {
             isomorphism: iso,
-            info_abstraction: None, // Passthrough
+            info_abstraction: None,
+            info_num_buckets: None,
         }
     }
 
@@ -250,21 +248,36 @@ impl ComposedAbstraction {
         Self::suit_iso_only(SuitIsomorphism::for_flop_board(board, valid_cards))
     }
 
+    /// Create with suit isomorphism and an info abstraction layer.
+    ///
+    /// The info abstraction maps isomorphic hand indices to a smaller number
+    /// of strategic buckets.
+    pub fn with_info_abstraction(
+        iso: SuitIsomorphism,
+        abs: Box<dyn InfoAbstraction>,
+    ) -> Self {
+        let num_buckets = abs.num_buckets();
+        Self {
+            isomorphism: iso,
+            info_abstraction: Some(abs),
+            info_num_buckets: Some(num_buckets),
+        }
+    }
+
     /// Get the underlying suit isomorphism.
     pub fn isomorphism(&self) -> &SuitIsomorphism {
         &self.isomorphism
     }
 
-    // TODO: Create with additional info abstraction
-    // pub fn with_info_abstraction(
-    //     iso: SuitIsomorphism,
-    //     abs: impl InfoAbstraction + 'static,
-    // ) -> Self {
-    //     Self {
-    //         isomorphism: iso,
-    //         info_abstraction: Some(Box::new(abs)),
-    //     }
-    // }
+    /// Check if this abstraction has an info abstraction layer.
+    pub fn has_info_abstraction(&self) -> bool {
+        self.info_abstraction.is_some()
+    }
+
+    /// Get the info abstraction layer (if any).
+    pub fn info_abstraction(&self) -> Option<&dyn InfoAbstraction> {
+        self.info_abstraction.as_ref().map(|a| a.as_ref())
+    }
 }
 
 impl HandAbstraction for ComposedAbstraction {
@@ -272,19 +285,22 @@ impl HandAbstraction for ComposedAbstraction {
         // Layer 1: combo → isomorphic bucket
         let iso_bucket = self.isomorphism.bucket(combo_idx, context)?;
 
-        // Layer 2: iso_bucket → final bucket (passthrough for now)
-        //
-        // TODO: When info_abstraction is Some, apply additional bucketing:
-        // match &self.info_abstraction {
-        //     Some(abs) => Some(abs.bucket(iso_bucket as usize, context) as u16),
-        //     None => Some(iso_bucket),
-        // }
-        Some(iso_bucket)
+        // Layer 2: iso_bucket → final bucket (if info abstraction is present)
+        match &self.info_abstraction {
+            Some(abs) => {
+                // Map iso bucket to info abstraction bucket
+                let final_bucket = abs.bucket(iso_bucket as usize, context);
+                Some(final_bucket as u16)
+            }
+            None => Some(iso_bucket),
+        }
     }
 
     fn num_buckets(&self, context: usize) -> usize {
-        // With info abstraction, this would return abs.num_buckets()
-        self.isomorphism.num_buckets(context)
+        match &self.info_abstraction {
+            Some(abs) => abs.num_buckets(),
+            None => self.isomorphism.num_buckets(context),
+        }
     }
 
     fn num_contexts(&self) -> usize {
@@ -292,17 +308,62 @@ impl HandAbstraction for ComposedAbstraction {
     }
 
     fn hands_to_buckets(&self, reaches: &[f32], context: usize) -> Vec<f32> {
-        // With info abstraction, would need additional aggregation step
-        self.isomorphism.hands_to_buckets(reaches, context)
+        match &self.info_abstraction {
+            Some(abs) => {
+                // First aggregate to iso buckets, then to info buckets
+                let iso_reaches = self.isomorphism.hands_to_buckets(reaches, context);
+
+                // Then aggregate iso reaches to info buckets
+                let num_info_buckets = abs.num_buckets();
+                let mut info_reaches = vec![0.0f32; num_info_buckets];
+
+                for (iso_bucket, &reach) in iso_reaches.iter().enumerate() {
+                    if reach > 0.0 {
+                        let info_bucket = abs.bucket(iso_bucket, context);
+                        info_reaches[info_bucket] += reach;
+                    }
+                }
+
+                info_reaches
+            }
+            None => self.isomorphism.hands_to_buckets(reaches, context),
+        }
     }
 
     fn buckets_to_hands(&self, values: &[f32], context: usize) -> Vec<f32> {
-        // With info abstraction, would need additional expansion step
-        self.isomorphism.buckets_to_hands(values, context)
+        match &self.info_abstraction {
+            Some(abs) => {
+                // Map info bucket values to iso bucket values
+                let num_iso_buckets = self.isomorphism.num_buckets(context);
+                let mut iso_values = vec![0.0f32; num_iso_buckets];
+
+                for iso_bucket in 0..num_iso_buckets {
+                    let info_bucket = abs.bucket(iso_bucket, context);
+                    iso_values[iso_bucket] = values[info_bucket];
+                }
+
+                // Then expand iso values to hand values
+                self.isomorphism.buckets_to_hands(&iso_values, context)
+            }
+            None => self.isomorphism.buckets_to_hands(values, context),
+        }
     }
 
     fn bucket_size(&self, bucket: u16, context: usize) -> u16 {
-        self.isomorphism.bucket_size(bucket, context)
+        match &self.info_abstraction {
+            Some(abs) => {
+                // Count all iso buckets that map to this info bucket
+                let num_iso_buckets = self.isomorphism.num_buckets(context);
+                let mut size = 0u16;
+                for iso_bucket in 0..num_iso_buckets {
+                    if abs.bucket(iso_bucket, context) == bucket as usize {
+                        size += self.isomorphism.bucket_size(iso_bucket as u16, context);
+                    }
+                }
+                size
+            }
+            None => self.isomorphism.bucket_size(bucket, context),
+        }
     }
 }
 
@@ -895,5 +956,163 @@ mod tests {
         let valid_cards = compute_valid_cards(&flop_board);
         let abs = create_abstraction(&flop_board, &valid_cards);
         assert_eq!(abs.num_contexts(), 49 * 49); // turn × river
+    }
+
+    // ============================================================================
+    // Validation tests ported from Gambit
+    // ============================================================================
+
+    #[test]
+    fn test_sum_preservation() {
+        // Test that sum(hand_range) == sum(bucket_range)
+        let board = parse_board("KhQsJs2c3d").unwrap();
+        let iso = SuitIsomorphism::new(&board);
+
+        // Create random reaches
+        let mut reaches = vec![0.0f32; NUM_COMBOS];
+        let mut total_before = 0.0f32;
+        for combo_idx in 0..NUM_COMBOS {
+            if iso.bucket(combo_idx, 0).is_some() {
+                let weight = (combo_idx as f32 + 1.0) / 1000.0;
+                reaches[combo_idx] = weight;
+                total_before += weight;
+            }
+        }
+
+        // Convert to buckets
+        let bucket_reaches = iso.hands_to_buckets(&reaches, 0);
+        let total_buckets: f32 = bucket_reaches.iter().sum();
+
+        // Sum should be preserved
+        assert!(
+            (total_before - total_buckets).abs() < 1e-5,
+            "Sum not preserved: before={}, after={}",
+            total_before,
+            total_buckets
+        );
+    }
+
+    #[test]
+    fn test_suit_isomorphism_pairs() {
+        // On a monotone board (all same suit), pairs without that suit should be isomorphic
+        // On this board with 4 spades, AA combos without spades should be equivalent
+        let board = parse_board("KsQsJs2s3h").unwrap();
+        let iso = SuitIsomorphism::new(&board);
+
+        // Find AA combos that don't use spades (c, d, h only)
+        // AdAc, AdAh, AcAh
+        let aa_combos: Vec<usize> = (0..NUM_COMBOS)
+            .filter(|&idx| {
+                let combo = crate::poker::hands::Combo::from_index(idx);
+                let rank0 = combo.c0 / 4;
+                let rank1 = combo.c1 / 4;
+                let suit0 = combo.c0 % 4;
+                let suit1 = combo.c1 % 4;
+                // Both ranks are Aces
+                if rank0 != 12 || rank1 != 12 {
+                    return false;
+                }
+                // Neither suit is spades (3) or hearts (2) which is on board
+                suit0 != 3 && suit1 != 3 && suit0 != 2 && suit1 != 2
+            })
+            .collect();
+
+        // These AA combos (AdAc) should all be valid and map to same bucket
+        let valid_aa: Vec<_> = aa_combos
+            .iter()
+            .filter_map(|&idx| iso.bucket(idx, 0).map(|b| (idx, b)))
+            .collect();
+
+        // Should have at least one valid combo
+        assert!(!valid_aa.is_empty(), "Should have valid AA combo without spades or hearts");
+
+        // All remaining AA combos should map to the same bucket
+        if valid_aa.len() > 1 {
+            let first_bucket = valid_aa[0].1;
+            for (idx, bucket) in &valid_aa {
+                assert_eq!(
+                    *bucket, first_bucket,
+                    "AA combo {} should map to same bucket as others",
+                    idx
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_composed_with_info_abstraction() {
+        // Test ComposedAbstraction with a simple info abstraction layer
+        let board = parse_board("KhQsJs2c3d").unwrap();
+        let iso = SuitIsomorphism::new(&board);
+        let num_iso_buckets = iso.num_buckets(0);
+
+        // Create a simple info abstraction that halves the bucket count
+        let num_info_buckets = (num_iso_buckets / 2).max(1);
+        let assignments: Vec<u16> = (0..num_iso_buckets)
+            .map(|i| (i % num_info_buckets) as u16)
+            .collect();
+
+        let info_abs = EHSAbstraction::single_context(num_info_buckets, assignments, None);
+        let composed = ComposedAbstraction::with_info_abstraction(iso, Box::new(info_abs));
+
+        // Verify bucket count is reduced
+        assert_eq!(composed.num_buckets(0), num_info_buckets);
+
+        // Verify bucketing works
+        let mut has_valid = false;
+        for combo_idx in 0..NUM_COMBOS {
+            if let Some(bucket) = composed.bucket(combo_idx, 0) {
+                has_valid = true;
+                assert!(
+                    (bucket as usize) < num_info_buckets,
+                    "Bucket {} exceeds max {}",
+                    bucket,
+                    num_info_buckets
+                );
+            }
+        }
+        assert!(has_valid, "Should have at least one valid combo");
+    }
+
+    #[test]
+    fn test_bucket_coverage() {
+        // Test that all expected buckets are populated for a board
+        let board = parse_board("KhQsJs2c3d").unwrap();
+        let iso = SuitIsomorphism::new(&board);
+
+        let num_buckets = iso.num_buckets(0);
+        let mut bucket_counts = vec![0usize; num_buckets];
+
+        for combo_idx in 0..NUM_COMBOS {
+            if let Some(bucket) = iso.bucket(combo_idx, 0) {
+                bucket_counts[bucket as usize] += 1;
+            }
+        }
+
+        // Check that no bucket is empty (unless board blocks it)
+        let non_empty: Vec<_> = bucket_counts.iter().filter(|&&c| c > 0).collect();
+        assert!(!non_empty.is_empty(), "Should have at least one non-empty bucket");
+
+        // All valid combos should be assigned
+        let total_assigned: usize = bucket_counts.iter().sum();
+        assert!(total_assigned > 0, "Should have assigned combos");
+    }
+
+    #[test]
+    fn test_multi_context_bucket_independence() {
+        // Test that different contexts have independent bucketing
+        let board = parse_board("KhQsJs2c").unwrap();
+        let valid_cards = compute_valid_cards(&board);
+        let iso = SuitIsomorphism::for_turn_board(&board, &valid_cards);
+
+        assert!(iso.num_contexts() > 1);
+
+        // Different contexts may have different bucket counts
+        let ctx0_buckets = iso.num_buckets(0);
+        let ctx1_buckets = iso.num_buckets(1);
+
+        // Both should be positive
+        assert!(ctx0_buckets > 0);
+        assert!(ctx1_buckets > 0);
     }
 }

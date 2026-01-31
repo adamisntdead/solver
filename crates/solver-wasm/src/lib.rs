@@ -6,7 +6,7 @@ use std::cell::RefCell;
 
 use serde::{Deserialize, Serialize};
 use solver::poker::hands::{combo_to_string, Combo};
-use solver::poker::{parse_board, parse_range, PostflopGame, PostflopSolver};
+use solver::poker::{parse_board, parse_range, LoadedAbstractions, PostflopGame, PostflopSolver};
 use solver::tree::bet_size::parse_bet_size;
 use solver::{
     ActionTree, BetSizeOptions, BetType, IndexedActionTree, MemoryEstimate, PreflopConfig, Street,
@@ -433,6 +433,28 @@ pub fn get_default_config() -> String {
 
 // === Solver WASM Functions ===
 
+/// Abstraction configuration for the solver.
+///
+/// Controls which hand abstractions are used during solving.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AbstractionJsonConfig {
+    /// Abstraction mode: "none" (per-hand), "builtin" (standard abstractions), or "custom"
+    #[serde(default)]
+    pub mode: Option<String>,
+
+    /// Path or identifier for flop abstraction (used with "custom" mode)
+    #[serde(default)]
+    pub flop: Option<String>,
+
+    /// Path or identifier for turn abstraction (used with "custom" mode)
+    #[serde(default)]
+    pub turn: Option<String>,
+
+    /// Path or identifier for river abstraction (used with "custom" mode)
+    #[serde(default)]
+    pub river: Option<String>,
+}
+
 /// JSON config for creating a solver.
 ///
 /// Supports two formats:
@@ -469,6 +491,11 @@ pub struct SolverConfig {
     /// Stack sizes for each player
     #[serde(default)]
     pub stacks: Option<Vec<i32>>,
+
+    // === Abstraction config ===
+    /// Optional abstraction configuration
+    #[serde(default)]
+    pub abstraction: Option<AbstractionJsonConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -675,7 +702,29 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
         PostflopGame::new(indexed_tree, board, oop_range, ip_range, pot, effective_stack)
     };
 
-    let solver = PostflopSolver::new(&game);
+    // Determine abstraction mode
+    let use_abstraction = match &solver_config.abstraction {
+        Some(abs_config) => match abs_config.mode.as_deref() {
+            Some("builtin") => true,
+            Some("custom") => true, // TODO: Implement custom file loading
+            _ => false,
+        },
+        None => false,
+    };
+
+    // Create solver with or without abstraction
+    // Note: For now, loaded abstractions require JavaScript to fetch and pass the data
+    // via a separate WASM function. This is a placeholder for the abstraction support.
+    let loaded_abstractions: Option<LoadedAbstractions> = if use_abstraction {
+        // Abstraction support is enabled but actual file loading is not yet implemented
+        // in WASM. The JavaScript layer will need to fetch .abs files and pass them
+        // via load_abstraction_bytes() (to be implemented).
+        None
+    } else {
+        None
+    };
+
+    let solver = PostflopSolver::new_with_abstraction(&game, loaded_abstractions.as_ref());
     let num_ip = solver.num_hands(0);
     let num_oop = solver.num_hands(1);
     let num_buckets = solver.total_buckets();

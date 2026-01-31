@@ -116,6 +116,7 @@ const el = {
     solverOopRange: document.getElementById('solver-oop-range'),
     solverIpRange: document.getElementById('solver-ip-range'),
     solverIterations: document.getElementById('solver-iterations'),
+    abstractionMode: document.getElementById('abstraction-mode'),
     solveBtn: document.getElementById('solve-btn'),
     stopSolveBtn: document.getElementById('stop-solve-btn'),
     solverProgress: document.getElementById('solver-progress'),
@@ -950,13 +951,23 @@ async function startSolve() {
         ? Array(numPlayers).fill(config.starting_stacks[0])
         : config.starting_stacks;
 
+    // Build abstraction config
+    const abstractionMode = el.abstractionMode?.value || 'none';
+    const abstraction = abstractionMode !== 'none' ? {
+        mode: abstractionMode,
+        flop: null,
+        turn: null,
+        river: null
+    } : null;
+
     // Build solver config - use n-player format
     const solverConfig = {
         board,
         ranges,
         stacks,
         pot,
-        tree_config: config
+        tree_config: config,
+        abstraction
     };
 
     setStatus('Creating solver...');
