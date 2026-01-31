@@ -122,6 +122,7 @@ const el = {
     progressFill: document.getElementById('progress-fill'),
     solverIterCount: document.getElementById('solver-iter-count'),
     solverExploit: document.getElementById('solver-exploit'),
+    solverCompression: document.getElementById('solver-compression'),
 
     // Strategy
     strategySection: document.getElementById('strategy-section'),
@@ -965,6 +966,7 @@ async function startSolve() {
     el.progressFill.style.width = '0%';
     el.solverIterCount.textContent = `0 / ${targetIterations}`;
     el.solverExploit.textContent = '-';
+    el.solverCompression.textContent = '--';
 
     try {
         const createResult = create_solver(JSON.stringify(solverConfig));
@@ -983,6 +985,12 @@ async function startSolve() {
 
         // Fetch card info for multi-street trees
         fetchCardInfo();
+
+        // Display compression info
+        if (createResult.compression_ratio && createResult.num_buckets) {
+            el.solverCompression.textContent =
+                `${createResult.compression_ratio.toFixed(2)}x (${createResult.num_buckets} buckets)`;
+        }
 
         setStatus(`Solver created: ${createResult.num_oop_hands} OOP hands, ${createResult.num_ip_hands} IP hands`);
 

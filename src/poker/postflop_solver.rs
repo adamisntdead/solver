@@ -1588,6 +1588,26 @@ impl PostflopSolver {
         }
     }
 
+    /// Get the total number of buckets across all players (at context 0).
+    pub fn total_buckets(&self) -> usize {
+        self.num_buckets_per_context.iter().map(|v| v[0]).sum()
+    }
+
+    /// Get the total number of hands across all players.
+    pub fn total_hands(&self) -> usize {
+        self.hands.iter().map(|h| h.len()).sum()
+    }
+
+    /// Compute the compression ratio (total_hands / total_buckets).
+    /// Returns 1.0 if there are no buckets.
+    pub fn compression_ratio(&self) -> f32 {
+        let buckets = self.total_buckets();
+        if buckets == 0 {
+            return 1.0;
+        }
+        self.total_hands() as f32 / buckets as f32
+    }
+
     // === Multiway (N-player) solving methods ===
     //
     // These methods handle n-player CFR traversal where we track counterfactual

@@ -477,6 +477,8 @@ pub struct CreateSolverResult {
     pub error: Option<String>,
     pub num_ip_hands: Option<usize>,
     pub num_oop_hands: Option<usize>,
+    pub num_buckets: Option<usize>,
+    pub compression_ratio: Option<f32>,
 }
 
 /// Create a solver from JSON config.
@@ -497,6 +499,8 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
                 error: Some(format!("Failed to parse config: {}", e)),
                 num_ip_hands: None,
                 num_oop_hands: None,
+                num_buckets: None,
+                compression_ratio: None,
             }
         }
     };
@@ -510,6 +514,8 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
                 error: Some(format!("Invalid tree config: {}", e)),
                 num_ip_hands: None,
                 num_oop_hands: None,
+                num_buckets: None,
+                compression_ratio: None,
             }
         }
     };
@@ -522,6 +528,8 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
                 error: Some(format!("Failed to build tree: {}", e)),
                 num_ip_hands: None,
                 num_oop_hands: None,
+                num_buckets: None,
+                compression_ratio: None,
             }
         }
     };
@@ -537,6 +545,8 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
                 error: Some(format!("Invalid board: {}", e)),
                 num_ip_hands: None,
                 num_oop_hands: None,
+                num_buckets: None,
+                compression_ratio: None,
             }
         }
     };
@@ -553,6 +563,8 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
                 error: Some(format!("Number of players must be 2-6, got {}", num_players)),
                 num_ip_hands: None,
                 num_oop_hands: None,
+                num_buckets: None,
+                compression_ratio: None,
             };
         }
 
@@ -567,6 +579,8 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
                         error: Some(format!("Invalid range for player {}: {}", i, e)),
                         num_ip_hands: None,
                         num_oop_hands: None,
+                        num_buckets: None,
+                        compression_ratio: None,
                     }
                 }
             }
@@ -585,6 +599,8 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
                         )),
                         num_ip_hands: None,
                         num_oop_hands: None,
+                        num_buckets: None,
+                        compression_ratio: None,
                     };
                 }
                 s.clone()
@@ -607,6 +623,8 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
                     error: Some("Missing oop_range (or use 'ranges' for n-player format)".to_string()),
                     num_ip_hands: None,
                     num_oop_hands: None,
+                    num_buckets: None,
+                    compression_ratio: None,
                 }
             }
         };
@@ -619,6 +637,8 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
                     error: Some("Missing ip_range (or use 'ranges' for n-player format)".to_string()),
                     num_ip_hands: None,
                     num_oop_hands: None,
+                    num_buckets: None,
+                    compression_ratio: None,
                 }
             }
         };
@@ -631,6 +651,8 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
                     error: Some(format!("Invalid OOP range: {}", e)),
                     num_ip_hands: None,
                     num_oop_hands: None,
+                    num_buckets: None,
+                    compression_ratio: None,
                 }
             }
         };
@@ -643,6 +665,8 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
                     error: Some(format!("Invalid IP range: {}", e)),
                     num_ip_hands: None,
                     num_oop_hands: None,
+                    num_buckets: None,
+                    compression_ratio: None,
                 }
             }
         };
@@ -654,6 +678,8 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
     let solver = PostflopSolver::new(&game);
     let num_ip = solver.num_hands(0);
     let num_oop = solver.num_hands(1);
+    let num_buckets = solver.total_buckets();
+    let compression_ratio = solver.compression_ratio();
 
     SOLVER_STATE.with(|state| {
         *state.borrow_mut() = Some(SolverState { game, solver, pot });
@@ -664,6 +690,8 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
         error: None,
         num_ip_hands: Some(num_ip),
         num_oop_hands: Some(num_oop),
+        num_buckets: Some(num_buckets),
+        compression_ratio: Some(compression_ratio),
     }
 }
 
@@ -1257,4 +1285,403 @@ fn parse_bet_sizes_str(
         .filter(|s| !s.is_empty())
         .map(|s| parse_bet_size(s, allow_raise_rel))
         .collect()
+}
+
+// === Hand Abstraction Visualization WASM Functions ===
+
+use solver::poker::ehs::{compute_all_ehs, compute_winsplit_features, compute_emd_features};
+use solver::poker::hands::NUM_COMBOS;
+use solver::poker::{AggSIAbstraction, InfoAbstraction};
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EHSResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub hands: Vec<HandEHS>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HandEHS {
+    pub combo: String,
+    pub combo_idx: usize,
+    pub ehs: f32,
+}
+
+/// Compute EHS for all hands on a board.
+///
+/// Board should be 3-5 cards (e.g., "KhQsJs2c3d" for river).
+#[wasm_bindgen]
+pub fn compute_board_ehs(board_str: &str) -> JsValue {
+    let result = compute_board_ehs_internal(board_str);
+    serde_wasm_bindgen::to_value(&result).unwrap()
+}
+
+fn compute_board_ehs_internal(board_str: &str) -> EHSResult {
+    let board = match parse_board(board_str) {
+        Ok(b) => b,
+        Err(e) => {
+            return EHSResult {
+                success: false,
+                error: Some(format!("Invalid board: {}", e)),
+                hands: vec![],
+            }
+        }
+    };
+
+    let ehs_values = compute_all_ehs(&board.cards);
+
+    let mut hands = Vec::new();
+    for combo_idx in 0..NUM_COMBOS {
+        let combo = Combo::from_index(combo_idx);
+        if combo.conflicts_with_mask(board.mask) {
+            continue;
+        }
+
+        hands.push(HandEHS {
+            combo: combo_to_string(combo),
+            combo_idx,
+            ehs: ehs_values[combo_idx],
+        });
+    }
+
+    // Sort by EHS descending
+    hands.sort_by(|a, b| b.ehs.partial_cmp(&a.ehs).unwrap());
+
+    EHSResult {
+        success: true,
+        error: None,
+        hands,
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WinSplitResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub hands: Vec<HandWinSplit>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HandWinSplit {
+    pub combo: String,
+    pub combo_idx: usize,
+    pub win_freq: f32,
+    pub split_freq: f32,
+}
+
+/// Compute win/split frequencies for all hands on a river board.
+#[wasm_bindgen]
+pub fn compute_board_winsplit(board_str: &str) -> JsValue {
+    let result = compute_board_winsplit_internal(board_str);
+    serde_wasm_bindgen::to_value(&result).unwrap()
+}
+
+fn compute_board_winsplit_internal(board_str: &str) -> WinSplitResult {
+    let board = match parse_board(board_str) {
+        Ok(b) => b,
+        Err(e) => {
+            return WinSplitResult {
+                success: false,
+                error: Some(format!("Invalid board: {}", e)),
+                hands: vec![],
+            }
+        }
+    };
+
+    if board.cards.len() != 5 {
+        return WinSplitResult {
+            success: false,
+            error: Some("WinSplit requires a 5-card (river) board".to_string()),
+            hands: vec![],
+        };
+    }
+
+    let mut hands = Vec::new();
+    for combo_idx in 0..NUM_COMBOS {
+        let combo = Combo::from_index(combo_idx);
+        if combo.conflicts_with_mask(board.mask) {
+            continue;
+        }
+
+        let [win_freq, split_freq] = compute_winsplit_features(combo, &board.cards);
+        hands.push(HandWinSplit {
+            combo: combo_to_string(combo),
+            combo_idx,
+            win_freq,
+            split_freq,
+        });
+    }
+
+    // Sort by win frequency descending
+    hands.sort_by(|a, b| b.win_freq.partial_cmp(&a.win_freq).unwrap());
+
+    WinSplitResult {
+        success: true,
+        error: None,
+        hands,
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AggSIResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub num_buckets: usize,
+    pub buckets: Vec<BucketInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BucketInfo {
+    pub bucket_id: u16,
+    pub hands: Vec<String>,
+    pub count: usize,
+}
+
+/// Get AggSI (Aggressive Suit Isomorphism) buckets for a board.
+#[wasm_bindgen]
+pub fn get_aggsi_buckets(board_str: &str) -> JsValue {
+    let result = get_aggsi_buckets_internal(board_str);
+    serde_wasm_bindgen::to_value(&result).unwrap()
+}
+
+fn get_aggsi_buckets_internal(board_str: &str) -> AggSIResult {
+    let board = match parse_board(board_str) {
+        Ok(b) => b,
+        Err(e) => {
+            return AggSIResult {
+                success: false,
+                error: Some(format!("Invalid board: {}", e)),
+                num_buckets: 0,
+                buckets: vec![],
+            }
+        }
+    };
+
+    let aggsi = AggSIAbstraction::new(&board);
+    let num_buckets = aggsi.num_buckets();
+
+    // Group hands by bucket
+    let mut bucket_hands: Vec<Vec<String>> = vec![vec![]; num_buckets];
+
+    for combo_idx in 0..NUM_COMBOS {
+        let combo = Combo::from_index(combo_idx);
+        if combo.conflicts_with_mask(board.mask) {
+            continue;
+        }
+
+        let bucket = aggsi.bucket(combo_idx, 0);
+        bucket_hands[bucket].push(combo_to_string(combo));
+    }
+
+    let buckets: Vec<BucketInfo> = bucket_hands
+        .into_iter()
+        .enumerate()
+        .filter(|(_, hands)| !hands.is_empty())
+        .map(|(id, hands)| BucketInfo {
+            bucket_id: id as u16,
+            count: hands.len(),
+            hands,
+        })
+        .collect();
+
+    AggSIResult {
+        success: true,
+        error: None,
+        num_buckets,
+        buckets,
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EMDHistogramResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub combo: String,
+    pub histogram: Vec<f32>,
+}
+
+/// Compute the EMD histogram for a specific hand on a non-river board.
+#[wasm_bindgen]
+pub fn compute_emd_histogram(board_str: &str, combo_str: &str) -> JsValue {
+    let result = compute_emd_histogram_internal(board_str, combo_str);
+    serde_wasm_bindgen::to_value(&result).unwrap()
+}
+
+fn compute_emd_histogram_internal(board_str: &str, combo_str: &str) -> EMDHistogramResult {
+    let board = match parse_board(board_str) {
+        Ok(b) => b,
+        Err(e) => {
+            return EMDHistogramResult {
+                success: false,
+                error: Some(format!("Invalid board: {}", e)),
+                combo: combo_str.to_string(),
+                histogram: vec![],
+            }
+        }
+    };
+
+    if board.cards.len() > 4 {
+        return EMDHistogramResult {
+            success: false,
+            error: Some("EMD histogram requires a 3-4 card board (flop or turn)".to_string()),
+            combo: combo_str.to_string(),
+            histogram: vec![],
+        };
+    }
+
+    // Parse combo string (e.g., "AsKs", "AhKh")
+    let combo = match parse_combo(combo_str) {
+        Ok(c) => c,
+        Err(e) => {
+            return EMDHistogramResult {
+                success: false,
+                error: Some(format!("Invalid combo: {}", e)),
+                combo: combo_str.to_string(),
+                histogram: vec![],
+            }
+        }
+    };
+
+    if combo.conflicts_with_mask(board.mask) {
+        return EMDHistogramResult {
+            success: false,
+            error: Some("Combo conflicts with board".to_string()),
+            combo: combo_str.to_string(),
+            histogram: vec![],
+        };
+    }
+
+    let histogram = compute_emd_features(combo, &board.cards);
+
+    EMDHistogramResult {
+        success: true,
+        error: None,
+        combo: combo_str.to_string(),
+        histogram: histogram.to_vec(),
+    }
+}
+
+/// Parse a combo string like "AsKs" or "AhKh" into a Combo.
+fn parse_combo(s: &str) -> Result<Combo, String> {
+    let s = s.trim();
+    if s.len() != 4 {
+        return Err(format!("Combo must be 4 characters, got {}", s.len()));
+    }
+
+    let c1 = parse_card_str(&s[0..2])?;
+    let c2 = parse_card_str(&s[2..4])?;
+
+    Ok(Combo::new(c1, c2))
+}
+
+/// Parse a card string like "As" or "Kh" into a card number.
+fn parse_card_str(s: &str) -> Result<u8, String> {
+    if s.len() != 2 {
+        return Err(format!("Card must be 2 characters, got {}", s.len()));
+    }
+
+    let chars: Vec<char> = s.chars().collect();
+    let rank_char = chars[0].to_ascii_uppercase();
+    let suit_char = chars[1].to_ascii_lowercase();
+
+    let rank = match rank_char {
+        '2' => 0,
+        '3' => 1,
+        '4' => 2,
+        '5' => 3,
+        '6' => 4,
+        '7' => 5,
+        '8' => 6,
+        '9' => 7,
+        'T' => 8,
+        'J' => 9,
+        'Q' => 10,
+        'K' => 11,
+        'A' => 12,
+        _ => return Err(format!("Invalid rank: {}", rank_char)),
+    };
+
+    let suit = match suit_char {
+        'c' => 0,
+        'd' => 1,
+        'h' => 2,
+        's' => 3,
+        _ => return Err(format!("Invalid suit: {}", suit_char)),
+    };
+
+    Ok(rank * 4 + suit)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HandLookupResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub combo: String,
+    pub combo_idx: usize,
+    pub ehs: f32,
+    pub aggsi_bucket: Option<u16>,
+}
+
+/// Look up a specific hand's information on a board.
+#[wasm_bindgen]
+pub fn lookup_hand(board_str: &str, combo_str: &str) -> JsValue {
+    let result = lookup_hand_internal(board_str, combo_str);
+    serde_wasm_bindgen::to_value(&result).unwrap()
+}
+
+fn lookup_hand_internal(board_str: &str, combo_str: &str) -> HandLookupResult {
+    let board = match parse_board(board_str) {
+        Ok(b) => b,
+        Err(e) => {
+            return HandLookupResult {
+                success: false,
+                error: Some(format!("Invalid board: {}", e)),
+                combo: combo_str.to_string(),
+                combo_idx: 0,
+                ehs: 0.0,
+                aggsi_bucket: None,
+            }
+        }
+    };
+
+    let combo = match parse_combo(combo_str) {
+        Ok(c) => c,
+        Err(e) => {
+            return HandLookupResult {
+                success: false,
+                error: Some(format!("Invalid combo: {}", e)),
+                combo: combo_str.to_string(),
+                combo_idx: 0,
+                ehs: 0.0,
+                aggsi_bucket: None,
+            }
+        }
+    };
+
+    if combo.conflicts_with_mask(board.mask) {
+        return HandLookupResult {
+            success: false,
+            error: Some("Combo conflicts with board".to_string()),
+            combo: combo_str.to_string(),
+            combo_idx: 0,
+            ehs: 0.0,
+            aggsi_bucket: None,
+        };
+    }
+
+    let combo_idx = combo.to_index();
+    let ehs_values = compute_all_ehs(&board.cards);
+    let ehs = ehs_values[combo_idx];
+
+    let aggsi = AggSIAbstraction::new(&board);
+    let aggsi_bucket = Some(aggsi.bucket(combo_idx, 0) as u16);
+
+    HandLookupResult {
+        success: true,
+        error: None,
+        combo: combo_to_string(combo),
+        combo_idx,
+        ehs,
+        aggsi_bucket,
+    }
 }

@@ -15,8 +15,10 @@ default = ["rand", "rayon"]
 serde = ["dep:serde"]
 rand = ["dep:rand"]
 rayon = ["dep:rayon"]
+zstd = ["dep:zstd"]
 
 [dependencies]
 rand = { version = "0.8", features = ["small_rng"], optional = true }
 rayon = { version = "1.10", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
+zstd = { version = "0.13", optional = true }

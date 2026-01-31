@@ -34,8 +34,13 @@
 //! ```
 
 pub mod abstraction;
+pub mod abstraction_gen;
+pub mod abstraction_io;
 pub mod board_parser;
+pub mod clustering;
+pub mod ehs;
 pub mod hands;
+pub mod indexer;
 pub mod isomorphism;
 pub mod matchups;
 pub mod postflop_game;
@@ -43,8 +48,15 @@ pub mod postflop_solver;
 pub mod range_parser;
 
 pub use abstraction::{
-    create_abstraction, compute_valid_cards, ComposedAbstraction, HandAbstraction, SuitIsomorphism,
+    compute_valid_cards, create_abstraction, AggSIAbstraction, ComposedAbstraction,
+    EHSAbstraction, EMDAbstraction, HandAbstraction, InfoAbstraction, SemiAggSIAbstraction,
+    SuitIsomorphism, WinSplitAbstraction,
 };
+pub use abstraction_gen::{AbstractionConfig, AbstractionType, GeneratedAbstraction};
+pub use abstraction_io::{load_abstraction, save_abstraction, AbstractionIOError};
+pub use clustering::{DistanceMetric, KMeansConfig, KMeansResult};
+pub use ehs::{compute_all_ehs, compute_emd_features, compute_winsplit_features, EMD_NUM_BINS};
+pub use indexer::{ImperfectRecallIndexer, SingleBoardIndexer, Street};
 pub use board_parser::*;
 pub use hands::{Board, Card, Combo, Range, NUM_COMBOS};
 pub use isomorphism::{BoardIsomorphism, RiverIsomorphism, SuitMapping, INVALID_BUCKET};

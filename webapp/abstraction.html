@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand Abstraction Explorer</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        /* Abstraction-specific styles */
+        .abstraction-container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        .abstraction-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--bg-secondary);
+            padding: 10px 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .abstraction-header h1 {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .abstraction-header .nav-links {
+            display: flex;
+            gap: 12px;
+        }
+
+        .abstraction-header .nav-links a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        .abstraction-header .nav-links a:hover {
+            color: var(--text-primary);
+        }
+
+        .abstraction-main {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .abstraction-sidebar {
+            width: 280px;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border-color);
+            overflow-y: auto;
+            padding: var(--panel-padding);
+        }
+
+        .abstraction-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .abstraction-toolbar {
+            display: flex;
+            gap: 12px;
+            padding: 12px 16px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .abstraction-results {
+            flex: 1;
+            overflow: auto;
+            padding: 16px;
+        }
+
+        /* Board Input */
+        .board-input-section {
+            margin-bottom: 16px;
+        }
+
+        .board-cards {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .board-card {
+            width: 50px;
+            height: 70px;
+            border: 2px dashed var(--border-color);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .board-card.filled {
+            border-style: solid;
+            background: var(--bg-tertiary);
+        }
+
+        .board-card.hearts { color: #ef4444; }
+        .board-card.diamonds { color: #3b82f6; }
+        .board-card.clubs { color: #22c55e; }
+        .board-card.spades { color: #f59e0b; }
+
+        .board-card:hover {
+            border-color: var(--accent-primary);
+        }
+
+        /* Card Picker */
+        .card-picker {
+            display: none;
+            position: absolute;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 12px;
+            z-index: 100;
+            box-shadow: var(--shadow);
+        }
+
+        .card-picker.active {
+            display: block;
+        }
+
+        .card-picker-grid {
+            display: grid;
+            grid-template-columns: repeat(13, 1fr);
+            gap: 2px;
+        }
+
+        .card-picker-btn {
+            width: 28px;
+            height: 32px;
+            border: none;
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: bold;
+        }
+
+        .card-picker-btn:hover {
+            background: var(--bg-hover);
+        }
+
+        .card-picker-btn.selected {
+            background: var(--accent-primary);
+        }
+
+        .card-picker-btn.hearts { color: #ef4444; }
+        .card-picker-btn.diamonds { color: #3b82f6; }
+        .card-picker-btn.clubs { color: #22c55e; }
+        .card-picker-btn.spades { color: #f59e0b; }
+
+        .suit-row-label {
+            color: var(--text-secondary);
+            font-size: 12px;
+            padding: 4px 0 2px;
+        }
+
+        /* Hand Lookup */
+        .hand-lookup {
+            margin-bottom: 16px;
+        }
+
+        .hand-lookup input {
+            width: 100%;
+            padding: 8px 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-primary);
+            font-family: var(--font-mono);
+        }
+
+        .hand-lookup-result {
+            margin-top: 8px;
+            padding: 12px;
+            background: var(--bg-tertiary);
+            border-radius: 6px;
+            display: none;
+        }
+
+        .hand-lookup-result.visible {
+            display: block;
+        }
+
+        .lookup-stat {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+
+        .lookup-stat-label {
+            color: var(--text-secondary);
+        }
+
+        .lookup-stat-value {
+            font-family: var(--font-mono);
+            font-weight: bold;
+        }
+
+        /* View Tabs */
+        .view-tabs {
+            display: flex;
+            gap: 4px;
+        }
+
+        .view-tab {
+            padding: 6px 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .view-tab:hover {
+            color: var(--text-primary);
+        }
+
+        .view-tab.active {
+            background: var(--accent-primary);
+            border-color: var(--accent-primary);
+            color: var(--text-primary);
+        }
+
+        /* Hand Grid */
+        .hands-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+            gap: 6px;
+        }
+
+        .hand-card {
+            padding: 8px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .hand-card:hover {
+            border-color: var(--accent-primary);
+            background: var(--bg-hover);
+        }
+
+        .hand-card.selected {
+            border-color: var(--accent-primary);
+            background: var(--bg-tertiary);
+        }
+
+        .hand-combo {
+            font-family: var(--font-mono);
+            font-weight: bold;
+            font-size: 14px;
+        }
+
+        .hand-ehs {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        .hand-bucket {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        /* EHS color scale */
+        .ehs-very-low { color: #ef4444; }
+        .ehs-low { color: #f59e0b; }
+        .ehs-medium { color: #eab308; }
+        .ehs-high { color: #84cc16; }
+        .ehs-very-high { color: #22c55e; }
+
+        /* Bucket Explorer */
+        .bucket-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .bucket-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            margin-bottom: 4px;
+            cursor: pointer;
+        }
+
+        .bucket-item:hover {
+            background: var(--bg-hover);
+        }
+
+        .bucket-item.selected {
+            background: var(--accent-primary);
+        }
+
+        .bucket-id {
+            font-family: var(--font-mono);
+            font-weight: bold;
+        }
+
+        .bucket-count {
+            color: var(--text-secondary);
+            font-size: 12px;
+        }
+
+        /* EMD Histogram */
+        .emd-histogram {
+            margin-top: 16px;
+        }
+
+        .histogram-container {
+            display: flex;
+            align-items: flex-end;
+            height: 150px;
+            background: var(--bg-tertiary);
+            border-radius: 6px;
+            padding: 8px;
+            gap: 1px;
+        }
+
+        .histogram-bar {
+            flex: 1;
+            background: var(--accent-primary);
+            border-radius: 2px 2px 0 0;
+            min-width: 2px;
+            transition: height 0.3s;
+        }
+
+        .histogram-labels {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 4px;
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+
+        /* Stats Panel */
+        .stats-panel {
+            margin-top: 16px;
+            padding: 12px;
+            background: var(--bg-tertiary);
+            border-radius: 6px;
+        }
+
+        .stats-title {
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .stat-value {
+            font-family: var(--font-mono);
+            font-weight: bold;
+        }
+
+        /* View-specific containers */
+        .view-container {
+            display: none;
+        }
+
+        .view-container.active {
+            display: block;
+        }
+
+        /* Sort/Filter options */
+        .toolbar-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .toolbar-label {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .toolbar-select {
+            padding: 6px 10px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-primary);
+            font-size: 13px;
+        }
+
+        /* Bucket hands list */
+        .bucket-hands {
+            margin-top: 12px;
+        }
+
+        .bucket-hands-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .bucket-hand-chip {
+            padding: 4px 8px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+        }
+
+        /* Loading state */
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 200px;
+            color: var(--text-secondary);
+        }
+
+        .loading::after {
+            content: '';
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--text-secondary);
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="abstraction-container">
+        <header class="abstraction-header">
+            <h1>Hand Abstraction Explorer</h1>
+            <nav class="nav-links">
+                <a href="index.html">Tree Builder</a>
+            </nav>
+        </header>
+
+        <div class="abstraction-main">
+            <!-- Sidebar -->
+            <aside class="abstraction-sidebar">
+                <section class="config-section">
+                    <h2>Board</h2>
+                    <div class="board-input-section">
+                        <input type="text" id="board-input" placeholder="e.g., KhQsJs2c3d" spellcheck="false">
+                        <div class="board-cards" id="board-cards">
+                            <div class="board-card" data-index="0"></div>
+                            <div class="board-card" data-index="1"></div>
+                            <div class="board-card" data-index="2"></div>
+                            <div class="board-card" data-index="3"></div>
+                            <div class="board-card" data-index="4"></div>
+                        </div>
+                    </div>
+                    <div id="card-picker" class="card-picker"></div>
+                </section>
+
+                <section class="config-section">
+                    <h2>Hand Lookup</h2>
+                    <div class="hand-lookup">
+                        <input type="text" id="hand-lookup-input" placeholder="e.g., AsKs" spellcheck="false">
+                        <div class="hand-lookup-result" id="hand-lookup-result">
+                            <div class="lookup-stat">
+                                <span class="lookup-stat-label">Hand</span>
+                                <span class="lookup-stat-value" id="lookup-combo">-</span>
+                            </div>
+                            <div class="lookup-stat">
+                                <span class="lookup-stat-label">EHS</span>
+                                <span class="lookup-stat-value" id="lookup-ehs">-</span>
+                            </div>
+                            <div class="lookup-stat">
+                                <span class="lookup-stat-label">AggSI Bucket</span>
+                                <span class="lookup-stat-value" id="lookup-bucket">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="config-section">
+                    <div class="stats-panel">
+                        <div class="stats-title">Statistics</div>
+                        <div class="stats-grid">
+                            <div class="stat-item">
+                                <span class="stat-label">Valid Hands</span>
+                                <span class="stat-value" id="stat-valid-hands">-</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Avg EHS</span>
+                                <span class="stat-value" id="stat-avg-ehs">-</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">AggSI Buckets</span>
+                                <span class="stat-value" id="stat-aggsi-buckets">-</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Street</span>
+                                <span class="stat-value" id="stat-street">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </aside>
+
+            <!-- Main Content -->
+            <div class="abstraction-content">
+                <div class="abstraction-toolbar">
+                    <div class="view-tabs">
+                        <button class="view-tab active" data-view="hands">All Hands</button>
+                        <button class="view-tab" data-view="buckets">Buckets</button>
+                        <button class="view-tab" data-view="histogram">EMD Histogram</button>
+                    </div>
+                    <div class="toolbar-group">
+                        <span class="toolbar-label">Sort by:</span>
+                        <select class="toolbar-select" id="sort-by">
+                            <option value="ehs-desc">EHS (High to Low)</option>
+                            <option value="ehs-asc">EHS (Low to High)</option>
+                            <option value="combo">Hand Name</option>
+                            <option value="bucket">Bucket</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="abstraction-results" id="results-container">
+                    <!-- All Hands View -->
+                    <div class="view-container active" id="view-hands">
+                        <div class="empty-state">
+                            <div class="empty-state-icon">&#x1F0A1;</div>
+                            <div>Enter a board to explore hand abstractions</div>
+                        </div>
+                    </div>
+
+                    <!-- Buckets View -->
+                    <div class="view-container" id="view-buckets">
+                        <div class="empty-state">
+                            <div class="empty-state-icon">&#x1F4E6;</div>
+                            <div>Enter a board to view AggSI buckets</div>
+                        </div>
+                    </div>
+
+                    <!-- EMD Histogram View -->
+                    <div class="view-container" id="view-histogram">
+                        <div class="empty-state">
+                            <div class="empty-state-icon">&#x1F4CA;</div>
+                            <div>Select a hand from "All Hands" view to see its EMD histogram</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="status-bar" id="status-bar">
+            Ready
+        </div>
+    </div>
+
+    <script type="module" src="js/abstraction.js"></script>
+</body>
+</html>

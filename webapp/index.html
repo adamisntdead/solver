@@ -10,7 +10,10 @@
     <div class="app-container">
         <header class="app-header">
             <h1>Poker Tree Builder</h1>
-            <div class="header-actions">
+            <nav class="nav-links" style="margin-left: 20px;">
+                <a href="abstraction.html" style="color: var(--text-secondary); text-decoration: none; font-size: 14px;">Abstraction Explorer</a>
+            </nav>
+            <div class="header-actions" style="margin-left: auto;">
                 <button id="build-btn" class="btn btn-primary">Build Tree</button>
                 <button id="save-btn" class="btn btn-secondary">Save</button>
                 <button id="load-btn" class="btn btn-secondary">Load</button>
@@ -175,6 +178,10 @@
                         <div class="solver-stats">
                             <span id="solver-iter-count">0 / 200</span>
                             <span id="solver-exploit">-</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-label">Compression:</span>
+                            <span class="stat-value" id="solver-compression">--</span>
                         </div>
                     </div>
                 </section>
