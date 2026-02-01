@@ -170,7 +170,10 @@ pub struct PostflopSolver {
 }
 
 impl PostflopSolver {
-    /// Create a new solver for a postflop game.
+    /// Create a new solver for a postflop game without hand abstraction.
+    ///
+    /// This is the fast path that uses per-hand strategies without bucketing.
+    /// For abstraction support, use `new_with_abstraction()`.
     pub fn new(game: &PostflopGame) -> Self {
         let tree = &game.tree;
         let board = game.board.clone();
@@ -235,37 +238,32 @@ impl PostflopSolver {
             (Vec::new(), river_cards, table)
         };
 
-        // Build hand abstractions per player
-        // Each player gets their own abstraction (same structure, but separate instances)
+        // For no-abstraction mode, use identity mapping (hand_idx = bucket_idx)
+        // This avoids creating expensive isomorphism tables
         let mut abstractions: Vec<ComposedAbstraction> = Vec::with_capacity(num_players);
         let mut num_buckets_per_context: Vec<Vec<usize>> = Vec::with_capacity(num_players);
         let mut hand_to_bucket: Vec<Vec<u16>> = Vec::with_capacity(num_players);
 
+        // Determine number of contexts for storage allocation
+        let num_contexts = if is_river {
+            1
+        } else if is_flop {
+            valid_turn_cards.len() * valid_turn_cards.len()
+        } else {
+            valid_river_cards.len()
+        };
+
         for player in 0..num_players {
-            // Create abstraction based on starting street
-            let abstraction = if is_river {
-                ComposedAbstraction::new(&board)
-            } else if is_flop {
-                ComposedAbstraction::for_flop(&board, &valid_turn_cards)
-            } else {
-                ComposedAbstraction::for_turn(&board, &valid_river_cards)
-            };
+            // For no-abstraction, we create a minimal abstraction for river-only boards
+            // or skip it entirely for multi-street (use hand count directly)
+            let abstraction = ComposedAbstraction::new(&board); // Cheap, river-only table
 
-            // Compute number of buckets per context
-            let num_contexts = abstraction.num_contexts();
-            let buckets_per_ctx: Vec<usize> = (0..num_contexts)
-                .map(|ctx| abstraction.num_buckets(ctx))
-                .collect();
+            // Each context has same "bucket" count = hand count (identity mapping)
+            let num_hands = hands[player].len();
+            let buckets_per_ctx: Vec<usize> = vec![num_hands; num_contexts];
 
-            // Build hand_idx -> bucket mapping for context 0 (used in river-only mode)
-            let h2b: Vec<u16> = hands[player]
-                .iter()
-                .map(|h| {
-                    abstraction
-                        .bucket(h.combo_idx, 0)
-                        .unwrap_or(INVALID_BUCKET)
-                })
-                .collect();
+            // Identity mapping: hand_idx -> hand_idx
+            let h2b: Vec<u16> = (0..num_hands as u16).collect();
 
             abstractions.push(abstraction);
             num_buckets_per_context.push(buckets_per_ctx);
@@ -280,7 +278,7 @@ impl PostflopSolver {
             valid_river_cards.len(),
         );
 
-        // Allocate per-node storage using bucket counts
+        // Allocate per-node storage using hand counts (no bucketing)
         let num_nodes = tree.len();
         let mut regrets = Vec::with_capacity(num_nodes);
         let mut cum_strategy = Vec::with_capacity(num_nodes);
@@ -291,22 +289,9 @@ impl PostflopSolver {
                 let acting_player = node.player();
                 let num_actions = node.actions.len();
                 let num_contexts = node_num_contexts[node_idx];
+                let num_hands = hands[acting_player].len();
 
-                // Use bucket count instead of hand count for storage
-                // For multi-context nodes, use max bucket count across contexts
-                let max_buckets = if num_contexts == 1 {
-                    num_buckets_per_context[acting_player][0]
-                } else {
-                    // For multi-street, each context may have different bucket counts
-                    // We use uniform allocation based on the first non-trivial context
-                    let ctx_index = if num_contexts > 1 { 1 } else { 0 };
-                    num_buckets_per_context[acting_player]
-                        .get(ctx_index)
-                        .copied()
-                        .unwrap_or(num_buckets_per_context[acting_player][0])
-                };
-
-                let size = num_contexts * num_actions * max_buckets;
+                let size = num_contexts * num_actions * num_hands;
                 regrets.push(vec![0.0f32; size]);
                 cum_strategy.push(vec![0.0f32; size]);
             } else {

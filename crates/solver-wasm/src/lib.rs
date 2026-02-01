@@ -837,7 +837,11 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
         None
     };
 
-    let solver = PostflopSolver::new_with_abstraction(&game, loaded_abstractions.as_ref());
+    // Use fast path when no abstractions are loaded
+    let solver = match loaded_abstractions {
+        Some(ref abs) => PostflopSolver::new_with_abstraction(&game, Some(abs)),
+        None => PostflopSolver::new(&game),
+    };
     let num_ip = solver.num_hands(0);
     let num_oop = solver.num_hands(1);
     let num_buckets = solver.total_buckets();
