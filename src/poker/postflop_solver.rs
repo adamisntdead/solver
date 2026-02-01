@@ -1,4 +1,4 @@
-//! Vectorized postflop CFR solver with multi-street support and hand abstraction.
+//! Vectorized postflop CFR solver with multi-street support.
 //!
 //! Walks the betting tree ONCE per iteration with per-hand arrays,
 //! matching the approach used by Gambit and binary_wasm_solver.
@@ -6,12 +6,7 @@
 //! Key data flow:
 //! - `cfreach` (opponent counterfactual reach) flows DOWN the tree
 //! - `result` (counterfactual values) flow UP the tree
-//! - Regrets stored per (node, context, action, bucket) in flat arrays
-//!
-//! Hand abstraction:
-//! - Suit isomorphism groups equivalent hands into buckets (lossless)
-//! - Storage is per-bucket, reducing memory for monotone/two-tone boards
-//! - Reaches are aggregated to buckets, values expanded back to hands
+//! - Regrets stored per (node, context, action, hand) in flat arrays
 //!
 //! Multi-street support:
 //! - For 5-card boards (river): single context, hand ranks from HandInfo
@@ -20,20 +15,17 @@
 //! - For 3-card boards (flop→turn→river): two-level chance nodes with
 //!   composite contexts (turn_idx * num_river + river_idx)
 
-use crate::poker::abstraction::{
-    ComposedAbstraction, HandAbstraction, InfoAbstraction, SuitIsomorphism,
-};
 use crate::poker::abstraction_gen::GeneratedAbstraction;
 use crate::poker::hands::{Board, Combo, NUM_COMBOS};
-use crate::poker::isomorphism::INVALID_BUCKET;
 use crate::poker::matchups::evaluate_7cards;
 use crate::poker::postflop_game::PostflopGame;
 use crate::tree::{IndexedActionTree, IndexedNode, IndexedNodeType, Street};
 
 /// Pre-loaded abstraction data for each street.
 ///
-/// Used to pass loaded abstraction files to the solver.
-#[derive(Default)]
+/// Note: Abstraction support is not yet implemented in the solver.
+/// This struct exists for API compatibility with the WASM bindings.
+#[derive(Default, Clone)]
 pub struct LoadedAbstractions {
     /// Flop abstraction (optional)
     pub flop: Option<GeneratedAbstraction>,
@@ -41,41 +33,6 @@ pub struct LoadedAbstractions {
     pub turn: Option<GeneratedAbstraction>,
     /// River abstraction (optional)
     pub river: Option<GeneratedAbstraction>,
-}
-
-impl LoadedAbstractions {
-    /// Create empty (no abstractions loaded).
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the flop abstraction.
-    pub fn with_flop(mut self, abs: GeneratedAbstraction) -> Self {
-        self.flop = Some(abs);
-        self
-    }
-
-    /// Set the turn abstraction.
-    pub fn with_turn(mut self, abs: GeneratedAbstraction) -> Self {
-        self.turn = Some(abs);
-        self
-    }
-
-    /// Set the river abstraction.
-    pub fn with_river(mut self, abs: GeneratedAbstraction) -> Self {
-        self.river = Some(abs);
-        self
-    }
-
-    /// Get the abstraction for a given starting street.
-    pub fn get_for_street(&self, street: Street) -> Option<&GeneratedAbstraction> {
-        match street {
-            Street::Flop => self.flop.as_ref(),
-            Street::Turn => self.turn.as_ref(),
-            Street::River => self.river.as_ref(),
-            _ => None,
-        }
-    }
 }
 
 /// Info about a single hand (combo) for a player.
@@ -89,15 +46,10 @@ struct HandInfo {
     hand_rank: u32,
 }
 
-/// Vectorized CFR solver for postflop poker with hand abstraction.
+/// Vectorized CFR solver for postflop poker.
 ///
 /// Instead of walking the tree once per hand pair, this solver walks the
 /// betting tree once per iteration with arrays of per-hand values.
-///
-/// Uses hand abstraction (suit isomorphism) to reduce storage:
-/// - Regrets and strategies are stored per-bucket, not per-hand
-/// - Equivalent hands (differing only by suit labeling) share buckets
-/// - Typical compression: 1.25x-3.3x depending on board texture
 ///
 /// Supports multi-street solving via a card context system:
 /// - Turn→river: nodes below the chance node have separate regrets per river card.
@@ -107,9 +59,8 @@ struct HandInfo {
 /// calculation for showdown evaluation.
 pub struct PostflopSolver {
     /// Per-node regret storage.
-    /// Layout: `regrets[node_idx][context * num_actions * num_buckets + action * num_buckets + bucket]`
+    /// Layout: `regrets[node_idx][context * num_actions * num_hands + action * num_hands + hand]`
     /// Only player nodes have non-empty vectors.
-    /// Uses bucket indices from the abstraction, not hand indices.
     regrets: Vec<Vec<f32>>,
 
     /// Per-node cumulative strategy (same layout as regrets).
@@ -117,22 +68,7 @@ pub struct PostflopSolver {
 
     /// Hand info per player.
     /// `hands[p]` = hands for player p (indexed by tree player ID)
-    /// Still per-hand for reach tracking and terminal evaluation.
     hands: Vec<Vec<HandInfo>>,
-
-    /// Hand abstraction per player.
-    /// Maps combo indices to bucket indices for each card context.
-    abstractions: Vec<ComposedAbstraction>,
-
-    /// Number of buckets per context for each player.
-    /// `num_buckets[player][context]` = number of buckets
-    num_buckets_per_context: Vec<Vec<usize>>,
-
-    /// Maps hand index to bucket index for each player.
-    /// `hand_to_bucket[player][hand_idx]` = bucket index (for context 0, river-only)
-    /// For multi-street, use abstraction directly with context.
-    #[allow(dead_code)] // Reserved for future optimizations
-    hand_to_bucket: Vec<Vec<u16>>,
 
     /// Number of iterations completed per player.
     num_steps: Vec<u32>,
@@ -170,16 +106,12 @@ pub struct PostflopSolver {
 }
 
 impl PostflopSolver {
-    /// Create a new solver for a postflop game without hand abstraction.
-    ///
-    /// This is the fast path that uses per-hand strategies without bucketing.
-    /// For abstraction support, use `new_with_abstraction()`.
+    /// Create a new solver for a postflop game.
     pub fn new(game: &PostflopGame) -> Self {
         let tree = &game.tree;
         let board = game.board.clone();
         let starting_street = game.starting_street;
         let is_river = starting_street == Street::River;
-        let is_flop = starting_street == Street::Flop;
         let num_players = game.get_num_players();
 
         // Build hand arrays for each player
@@ -214,6 +146,7 @@ impl PostflopSolver {
         }
 
         // Compute valid cards and hand rank table for multi-street
+        let is_flop = starting_street == Street::Flop;
         let (valid_turn_cards, valid_river_cards, hand_rank_table) = if is_river {
             (Vec::new(), Vec::new(), Vec::new())
         } else if is_flop {
@@ -238,38 +171,6 @@ impl PostflopSolver {
             (Vec::new(), river_cards, table)
         };
 
-        // For no-abstraction mode, use identity mapping (hand_idx = bucket_idx)
-        // This avoids creating expensive isomorphism tables
-        let mut abstractions: Vec<ComposedAbstraction> = Vec::with_capacity(num_players);
-        let mut num_buckets_per_context: Vec<Vec<usize>> = Vec::with_capacity(num_players);
-        let mut hand_to_bucket: Vec<Vec<u16>> = Vec::with_capacity(num_players);
-
-        // Determine number of contexts for storage allocation
-        let num_contexts = if is_river {
-            1
-        } else if is_flop {
-            valid_turn_cards.len() * valid_turn_cards.len()
-        } else {
-            valid_river_cards.len()
-        };
-
-        for player in 0..num_players {
-            // For no-abstraction, we create a minimal abstraction for river-only boards
-            // or skip it entirely for multi-street (use hand count directly)
-            let abstraction = ComposedAbstraction::new(&board); // Cheap, river-only table
-
-            // Each context has same "bucket" count = hand count (identity mapping)
-            let num_hands = hands[player].len();
-            let buckets_per_ctx: Vec<usize> = vec![num_hands; num_contexts];
-
-            // Identity mapping: hand_idx -> hand_idx
-            let h2b: Vec<u16> = (0..num_hands as u16).collect();
-
-            abstractions.push(abstraction);
-            num_buckets_per_context.push(buckets_per_ctx);
-            hand_to_bucket.push(h2b);
-        }
-
         // Determine context count per node
         let node_num_contexts = compute_node_contexts(
             tree,
@@ -278,7 +179,7 @@ impl PostflopSolver {
             valid_river_cards.len(),
         );
 
-        // Allocate per-node storage using hand counts (no bucketing)
+        // Allocate per-node storage
         let num_nodes = tree.len();
         let mut regrets = Vec::with_capacity(num_nodes);
         let mut cum_strategy = Vec::with_capacity(num_nodes);
@@ -288,9 +189,8 @@ impl PostflopSolver {
             if node.is_player() {
                 let acting_player = node.player();
                 let num_actions = node.actions.len();
-                let num_contexts = node_num_contexts[node_idx];
                 let num_hands = hands[acting_player].len();
-
+                let num_contexts = node_num_contexts[node_idx];
                 let size = num_contexts * num_actions * num_hands;
                 regrets.push(vec![0.0f32; size]);
                 cum_strategy.push(vec![0.0f32; size]);
@@ -304,9 +204,6 @@ impl PostflopSolver {
             regrets,
             cum_strategy,
             hands,
-            abstractions,
-            num_buckets_per_context,
-            hand_to_bucket,
             num_steps: vec![0; num_players],
             num_players,
             board,
@@ -320,188 +217,17 @@ impl PostflopSolver {
 
     /// Create a new solver with pre-loaded hand abstractions.
     ///
-    /// This allows using externally generated abstraction files instead of
-    /// the default suit isomorphism only.
-    ///
-    /// # Arguments
-    ///
-    /// * `game` - The postflop game configuration
-    /// * `loaded_abstractions` - Pre-loaded abstraction data for each street
+    /// Note: Abstraction support is not yet fully implemented.
+    /// This currently delegates to `new()` and ignores the abstractions.
+    /// Future versions will use abstractions to reduce memory and computation.
+    #[allow(unused_variables)]
     pub fn new_with_abstraction(
         game: &PostflopGame,
         loaded_abstractions: Option<&LoadedAbstractions>,
     ) -> Self {
-        // If no abstractions provided, delegate to standard constructor
-        let loaded_abs = match loaded_abstractions {
-            Some(abs) => abs,
-            None => return Self::new(game),
-        };
-
-        let tree = &game.tree;
-        let board = game.board.clone();
-        let starting_street = game.starting_street;
-        let is_river = starting_street == Street::River;
-        let is_flop = starting_street == Street::Flop;
-        let num_players = game.get_num_players();
-
-        // Build hand arrays for each player
-        let mut hands: Vec<Vec<HandInfo>> = vec![Vec::new(); num_players];
-
-        for player in 0..num_players {
-            let range = game.range(player);
-            for combo_idx in 0..NUM_COMBOS {
-                let weight = range.weights[combo_idx];
-                if weight == 0.0 {
-                    continue;
-                }
-                let combo = Combo::from_index(combo_idx);
-                if combo.conflicts_with_mask(board.mask) {
-                    continue;
-                }
-
-                let hand_rank = if is_river {
-                    game.matchups.as_ref().unwrap().hand_ranks[combo_idx]
-                } else {
-                    0
-                };
-
-                hands[player].push(HandInfo {
-                    combo_idx,
-                    c0: combo.c0,
-                    c1: combo.c1,
-                    initial_weight: weight,
-                    hand_rank,
-                });
-            }
-        }
-
-        // Compute valid cards and hand rank table for multi-street
-        let (valid_turn_cards, valid_river_cards, hand_rank_table) = if is_river {
-            (Vec::new(), Vec::new(), Vec::new())
-        } else if is_flop {
-            let mut cards: Vec<u8> = Vec::new();
-            for card in 0..52u8 {
-                if (board.mask >> card) & 1 == 0 {
-                    cards.push(card);
-                }
-            }
-            let table = precompute_hand_rank_table_flop(&board, &cards);
-            (cards.clone(), cards, table)
-        } else {
-            let mut river_cards: Vec<u8> = Vec::new();
-            for card in 0..52u8 {
-                if (board.mask >> card) & 1 == 0 {
-                    river_cards.push(card);
-                }
-            }
-            let table = precompute_hand_rank_table(&board, &river_cards);
-            (Vec::new(), river_cards, table)
-        };
-
-        // Build hand abstractions per player
-        let mut abstractions: Vec<ComposedAbstraction> = Vec::with_capacity(num_players);
-        let mut num_buckets_per_context: Vec<Vec<usize>> = Vec::with_capacity(num_players);
-        let mut hand_to_bucket: Vec<Vec<u16>> = Vec::with_capacity(num_players);
-
-        // Try to get the loaded abstraction for this street
-        let loaded_for_street = loaded_abs.get_for_street(starting_street);
-
-        for player in 0..num_players {
-            // Create base suit isomorphism
-            let iso = if is_river {
-                SuitIsomorphism::new(&board)
-            } else if is_flop {
-                SuitIsomorphism::for_flop_board(&board, &valid_turn_cards)
-            } else {
-                SuitIsomorphism::for_turn_board(&board, &valid_river_cards)
-            };
-
-            // Create composed abstraction with or without info abstraction
-            let abstraction = match loaded_for_street {
-                Some(gen_abs) => {
-                    // Convert GeneratedAbstraction to InfoAbstraction
-                    let info_abs = generated_to_info_abstraction(gen_abs);
-                    ComposedAbstraction::with_info_abstraction(iso, info_abs)
-                }
-                None => ComposedAbstraction::suit_iso_only(iso),
-            };
-
-            // Compute number of buckets per context
-            let num_contexts = abstraction.num_contexts();
-            let buckets_per_ctx: Vec<usize> = (0..num_contexts)
-                .map(|ctx| abstraction.num_buckets(ctx))
-                .collect();
-
-            // Build hand_idx -> bucket mapping for context 0
-            let h2b: Vec<u16> = hands[player]
-                .iter()
-                .map(|h| {
-                    abstraction
-                        .bucket(h.combo_idx, 0)
-                        .unwrap_or(INVALID_BUCKET)
-                })
-                .collect();
-
-            abstractions.push(abstraction);
-            num_buckets_per_context.push(buckets_per_ctx);
-            hand_to_bucket.push(h2b);
-        }
-
-        // Determine context count per node
-        let node_num_contexts = compute_node_contexts(
-            tree,
-            starting_street,
-            valid_turn_cards.len(),
-            valid_river_cards.len(),
-        );
-
-        // Allocate per-node storage using bucket counts
-        let num_nodes = tree.len();
-        let mut regrets = Vec::with_capacity(num_nodes);
-        let mut cum_strategy = Vec::with_capacity(num_nodes);
-
-        for node_idx in 0..num_nodes {
-            let node = tree.get(node_idx);
-            if node.is_player() {
-                let acting_player = node.player();
-                let num_actions = node.actions.len();
-                let num_contexts = node_num_contexts[node_idx];
-
-                let max_buckets = if num_contexts == 1 {
-                    num_buckets_per_context[acting_player][0]
-                } else {
-                    let ctx_index = if num_contexts > 1 { 1 } else { 0 };
-                    num_buckets_per_context[acting_player]
-                        .get(ctx_index)
-                        .copied()
-                        .unwrap_or(num_buckets_per_context[acting_player][0])
-                };
-
-                let size = num_contexts * num_actions * max_buckets;
-                regrets.push(vec![0.0f32; size]);
-                cum_strategy.push(vec![0.0f32; size]);
-            } else {
-                regrets.push(Vec::new());
-                cum_strategy.push(Vec::new());
-            }
-        }
-
-        PostflopSolver {
-            regrets,
-            cum_strategy,
-            hands,
-            abstractions,
-            num_buckets_per_context,
-            hand_to_bucket,
-            num_steps: vec![0; num_players],
-            num_players,
-            board,
-            starting_street,
-            valid_turn_cards,
-            valid_river_cards,
-            hand_rank_table,
-            node_num_contexts,
-        }
+        // TODO: Implement abstraction-aware solver
+        // For now, just use the standard solver
+        Self::new(game)
     }
 
     /// Train using Linear CFR with alternating updates.
@@ -628,9 +354,9 @@ impl PostflopSolver {
             // === TRAVERSER'S NODE ===
             let num_hands = self.hands[traverser].len();
 
-            // Get current strategy via regret matching (expanded to hand-level)
+            // Get current strategy via regret matching
             let strategy =
-                self.regret_matching_for(node_idx, num_actions, num_hands, card_context, traverser);
+                self.regret_matching_for(node_idx, num_actions, num_hands, card_context);
 
             // Compute CFV for each action
             let mut cfv_actions = vec![0.0f32; num_actions * num_hands];
@@ -658,45 +384,27 @@ impl PostflopSolver {
                 }
             }
 
-            // Update regrets: aggregate hand-level regrets to bucket-level
-            // regret[bucket] += sum over hands in bucket (cfv_action - node_cfv)
-            let num_buckets = self.num_buckets_per_context[traverser]
-                .get(card_context)
-                .copied()
-                .unwrap_or(self.num_buckets_per_context[traverser][0]);
-            let offset = card_context * num_actions * num_buckets;
-            let abstraction = &self.abstractions[traverser];
-
+            // Update regrets: regret[a][h] += cfv_action[a][h] - node_cfv[h]
+            let offset = card_context * num_actions * num_hands;
             for action in 0..num_actions {
                 for h in 0..num_hands {
-                    let combo_idx = self.hands[traverser][h].combo_idx;
-                    if let Some(bucket) = abstraction.bucket(combo_idx, card_context) {
-                        let regret_delta = cfv_actions[action * num_hands + h] - result[h];
-                        self.regrets[node_idx][offset + action * num_buckets + bucket as usize] +=
-                            regret_delta;
-                    }
+                    self.regrets[node_idx][offset + action * num_hands + h] +=
+                        cfv_actions[action * num_hands + h] - result[h];
                 }
             }
 
-            // Accumulate strategy for averaging (aggregate to buckets)
-            for action in 0..num_actions {
-                for h in 0..num_hands {
-                    let combo_idx = self.hands[traverser][h].combo_idx;
-                    if let Some(bucket) = abstraction.bucket(combo_idx, card_context) {
-                        self.cum_strategy[node_idx]
-                            [offset + action * num_buckets + bucket as usize] +=
-                            strategy[action * num_hands + h];
-                    }
-                }
+            // Accumulate strategy for averaging
+            for i in 0..num_actions * num_hands {
+                self.cum_strategy[node_idx][offset + i] += strategy[i];
             }
         } else {
             // === OPPONENT'S NODE ===
             let num_opp_hands = self.hands[acting_player].len();
             let num_trav_hands = self.hands[traverser].len();
 
-            // Get opponent's strategy (expanded to hand-level)
+            // Get opponent's strategy
             let strategy =
-                self.regret_matching_for(node_idx, num_actions, num_opp_hands, card_context, acting_player);
+                self.regret_matching_for(node_idx, num_actions, num_opp_hands, card_context);
 
             // Recurse with updated cfreach (cfreach * opponent strategy per action)
             let mut cfv_actions = vec![0.0f32; num_actions * num_trav_hands];
@@ -1186,8 +894,6 @@ impl PostflopSolver {
     }
 
     /// Compute current strategy from regrets via regret matching.
-    ///
-    /// Storage is per-bucket, but we return per-hand strategy for CFR traversal.
     /// Returns owned Vec of size `num_actions * num_hands`.
     fn regret_matching_for(
         &self,
@@ -1195,7 +901,6 @@ impl PostflopSolver {
         num_actions: usize,
         num_hands: usize,
         card_context: usize,
-        acting_player: usize,
     ) -> Vec<f32> {
         let regrets = &self.regrets[node_idx];
         if regrets.is_empty() {
@@ -1203,52 +908,25 @@ impl PostflopSolver {
             return vec![uniform; num_actions * num_hands];
         }
 
-        // Get bucket count for this context
-        let num_buckets = self.num_buckets_per_context[acting_player]
-            .get(card_context)
-            .copied()
-            .unwrap_or(self.num_buckets_per_context[acting_player][0]);
-
-        let offset = card_context * num_actions * num_buckets;
-
-        // First, compute bucket-level strategy via regret matching
-        let mut bucket_strategy = vec![0.0f32; num_actions * num_buckets];
+        let offset = card_context * num_actions * num_hands;
+        let mut strategy = vec![0.0f32; num_actions * num_hands];
 
         // Clamp negatives to 0
-        for i in 0..num_actions * num_buckets {
-            bucket_strategy[i] = regrets[offset + i].max(0.0);
+        for i in 0..num_actions * num_hands {
+            strategy[i] = regrets[offset + i].max(0.0);
         }
 
-        // Normalize per bucket
-        for b in 0..num_buckets {
+        // Normalize per hand
+        for h in 0..num_hands {
             let mut sum = 0.0f32;
             for a in 0..num_actions {
-                sum += bucket_strategy[a * num_buckets + b];
+                sum += strategy[a * num_hands + h];
             }
             if sum > 0.0 {
                 for a in 0..num_actions {
-                    bucket_strategy[a * num_buckets + b] /= sum;
+                    strategy[a * num_hands + h] /= sum;
                 }
             } else {
-                let uniform = 1.0 / num_actions as f32;
-                for a in 0..num_actions {
-                    bucket_strategy[a * num_buckets + b] = uniform;
-                }
-            }
-        }
-
-        // Expand bucket strategy to hand strategy
-        let mut strategy = vec![0.0f32; num_actions * num_hands];
-        let abstraction = &self.abstractions[acting_player];
-
-        for h in 0..num_hands {
-            let combo_idx = self.hands[acting_player][h].combo_idx;
-            if let Some(bucket) = abstraction.bucket(combo_idx, card_context) {
-                for a in 0..num_actions {
-                    strategy[a * num_hands + h] = bucket_strategy[a * num_buckets + bucket as usize];
-                }
-            } else {
-                // Blocked hand - use uniform (shouldn't happen with valid hands)
                 let uniform = 1.0 / num_actions as f32;
                 for a in 0..num_actions {
                     strategy[a * num_hands + h] = uniform;
@@ -1260,15 +938,12 @@ impl PostflopSolver {
     }
 
     /// Compute average strategy for a node (from cumulative strategy sums).
-    ///
-    /// Storage is per-bucket, but we return per-hand strategy for CFR traversal.
     fn average_strategy_for(
         &self,
         node_idx: usize,
         num_actions: usize,
         num_hands: usize,
         card_context: usize,
-        acting_player: usize,
     ) -> Vec<f32> {
         let cum = &self.cum_strategy[node_idx];
         if cum.is_empty() || cum.iter().all(|&x| x == 0.0) {
@@ -1276,47 +951,21 @@ impl PostflopSolver {
             return vec![uniform; num_actions * num_hands];
         }
 
-        // Get bucket count for this context
-        let num_buckets = self.num_buckets_per_context[acting_player]
-            .get(card_context)
-            .copied()
-            .unwrap_or(self.num_buckets_per_context[acting_player][0]);
-
-        let offset = card_context * num_actions * num_buckets;
-
-        // Read bucket-level cumulative strategy
-        let mut bucket_avg = Vec::with_capacity(num_actions * num_buckets);
-        for i in 0..num_actions * num_buckets {
-            bucket_avg.push(cum[offset + i]);
+        let offset = card_context * num_actions * num_hands;
+        let mut avg = Vec::with_capacity(num_actions * num_hands);
+        for i in 0..num_actions * num_hands {
+            avg.push(cum[offset + i]);
         }
 
-        // Normalize per bucket
-        for b in 0..num_buckets {
+        // Normalize per hand
+        for h in 0..num_hands {
             let mut sum = 0.0f32;
             for a in 0..num_actions {
-                sum += bucket_avg[a * num_buckets + b];
+                sum += avg[a * num_hands + h];
             }
             if sum > 0.0 {
                 for a in 0..num_actions {
-                    bucket_avg[a * num_buckets + b] /= sum;
-                }
-            } else {
-                let uniform = 1.0 / num_actions as f32;
-                for a in 0..num_actions {
-                    bucket_avg[a * num_buckets + b] = uniform;
-                }
-            }
-        }
-
-        // Expand to hand-level
-        let mut avg = vec![0.0f32; num_actions * num_hands];
-        let abstraction = &self.abstractions[acting_player];
-
-        for h in 0..num_hands {
-            let combo_idx = self.hands[acting_player][h].combo_idx;
-            if let Some(bucket) = abstraction.bucket(combo_idx, card_context) {
-                for a in 0..num_actions {
-                    avg[a * num_hands + h] = bucket_avg[a * num_buckets + bucket as usize];
+                    avg[a * num_hands + h] /= sum;
                 }
             } else {
                 let uniform = 1.0 / num_actions as f32;
@@ -1482,7 +1131,7 @@ impl PostflopSolver {
             let num_opp_hands = self.hands[acting_player].len();
             let num_trav_hands = self.hands[traverser].len();
             let avg_strategy =
-                self.average_strategy_for(node_idx, num_actions, num_opp_hands, card_context, acting_player);
+                self.average_strategy_for(node_idx, num_actions, num_opp_hands, card_context);
 
             let mut cfv_actions = vec![0.0f32; num_actions * num_trav_hands];
             for action in 0..num_actions {
@@ -1652,6 +1301,24 @@ impl PostflopSolver {
         self.hands[player].len()
     }
 
+    /// Get total number of buckets used by the solver.
+    ///
+    /// Without abstraction, this equals the total number of hands.
+    /// With abstraction, this would be the sum of bucket counts.
+    pub fn total_buckets(&self) -> usize {
+        // Without abstraction, each hand is its own bucket
+        self.hands.iter().map(|h| h.len()).sum()
+    }
+
+    /// Get the compression ratio from abstraction.
+    ///
+    /// Returns 1.0 when no abstraction is used (no compression).
+    /// With abstraction, returns num_hands / num_buckets.
+    pub fn compression_ratio(&self) -> f32 {
+        // No abstraction = no compression
+        1.0
+    }
+
     /// Get hand info: (combo_index, initial_weight) for a player's hand.
     pub fn hand_info(&self, player: usize, hand_idx: usize) -> (usize, f32) {
         let h = &self.hands[player][hand_idx];
@@ -1684,15 +1351,10 @@ impl PostflopSolver {
             return Vec::new();
         }
 
-        // Storage is per-bucket, so we need to calculate num_actions from bucket count
-        let num_buckets = self.num_buckets_per_context[player]
-            .get(card_context)
-            .copied()
-            .unwrap_or(self.num_buckets_per_context[player][0]);
         let per_context = total_size / num_contexts;
-        let num_actions = per_context / num_buckets;
+        let num_actions = per_context / num_hands;
 
-        let avg = self.average_strategy_for(node_idx, num_actions, num_hands, card_context, player);
+        let avg = self.average_strategy_for(node_idx, num_actions, num_hands, card_context);
         (0..num_actions)
             .map(|a| avg[a * num_hands + hand_idx])
             .collect()
@@ -1810,26 +1472,6 @@ impl PostflopSolver {
         }
     }
 
-    /// Get the total number of buckets across all players (at context 0).
-    pub fn total_buckets(&self) -> usize {
-        self.num_buckets_per_context.iter().map(|v| v[0]).sum()
-    }
-
-    /// Get the total number of hands across all players.
-    pub fn total_hands(&self) -> usize {
-        self.hands.iter().map(|h| h.len()).sum()
-    }
-
-    /// Compute the compression ratio (total_hands / total_buckets).
-    /// Returns 1.0 if there are no buckets.
-    pub fn compression_ratio(&self) -> f32 {
-        let buckets = self.total_buckets();
-        if buckets == 0 {
-            return 1.0;
-        }
-        self.total_hands() as f32 / buckets as f32
-    }
-
     // === Multiway (N-player) solving methods ===
     //
     // These methods handle n-player CFR traversal where we track counterfactual
@@ -1884,9 +1526,9 @@ impl PostflopSolver {
             // === TRAVERSER'S NODE ===
             let num_hands = self.hands[traverser].len();
 
-            // Get current strategy via regret matching (expanded to hand-level)
+            // Get current strategy via regret matching
             let strategy =
-                self.regret_matching_for(node_idx, num_actions, num_hands, card_context, traverser);
+                self.regret_matching_for(node_idx, num_actions, num_hands, card_context);
 
             // Compute CFV for each action
             let mut cfv_actions = vec![0.0f32; num_actions * num_hands];
@@ -1914,35 +1556,18 @@ impl PostflopSolver {
                 }
             }
 
-            // Update regrets (aggregate to buckets)
-            let num_buckets = self.num_buckets_per_context[traverser]
-                .get(card_context)
-                .copied()
-                .unwrap_or(self.num_buckets_per_context[traverser][0]);
-            let offset = card_context * num_actions * num_buckets;
-            let abstraction = &self.abstractions[traverser];
-
+            // Update regrets
+            let offset = card_context * num_actions * num_hands;
             for action in 0..num_actions {
                 for h in 0..num_hands {
-                    let combo_idx = self.hands[traverser][h].combo_idx;
-                    if let Some(bucket) = abstraction.bucket(combo_idx, card_context) {
-                        let regret_delta = cfv_actions[action * num_hands + h] - result[h];
-                        self.regrets[node_idx][offset + action * num_buckets + bucket as usize] +=
-                            regret_delta;
-                    }
+                    self.regrets[node_idx][offset + action * num_hands + h] +=
+                        cfv_actions[action * num_hands + h] - result[h];
                 }
             }
 
-            // Accumulate strategy for averaging (aggregate to buckets)
-            for action in 0..num_actions {
-                for h in 0..num_hands {
-                    let combo_idx = self.hands[traverser][h].combo_idx;
-                    if let Some(bucket) = abstraction.bucket(combo_idx, card_context) {
-                        self.cum_strategy[node_idx]
-                            [offset + action * num_buckets + bucket as usize] +=
-                            strategy[action * num_hands + h];
-                    }
-                }
+            // Accumulate strategy for averaging
+            for i in 0..num_actions * num_hands {
+                self.cum_strategy[node_idx][offset + i] += strategy[i];
             }
         } else {
             // === OPPONENT'S NODE ===
@@ -1951,9 +1576,9 @@ impl PostflopSolver {
             let num_opp_hands = self.hands[acting_player].len();
             let num_trav_hands = self.hands[traverser].len();
 
-            // Get opponent's strategy (expanded to hand-level)
+            // Get opponent's strategy
             let strategy =
-                self.regret_matching_for(node_idx, num_actions, num_opp_hands, card_context, acting_player);
+                self.regret_matching_for(node_idx, num_actions, num_opp_hands, card_context);
 
             // Recurse with updated cfreach for this opponent
             let mut cfv_actions = vec![0.0f32; num_actions * num_trav_hands];
@@ -2355,7 +1980,7 @@ impl PostflopSolver {
             let num_opp_hands = self.hands[acting_player].len();
             let num_trav_hands = self.hands[traverser].len();
             let avg_strategy =
-                self.average_strategy_for(node_idx, num_actions, num_opp_hands, card_context, acting_player);
+                self.average_strategy_for(node_idx, num_actions, num_opp_hands, card_context);
 
             let mut cfv_actions = vec![0.0f32; num_actions * num_trav_hands];
             for action in 0..num_actions {
@@ -2650,42 +2275,6 @@ fn precompute_hand_rank_table_flop(board: &Board, valid_cards: &[u8]) -> Vec<Vec
         }
     }
     table
-}
-
-/// Convert a GeneratedAbstraction to a boxed InfoAbstraction.
-///
-/// This creates an info abstraction that maps isomorphic hand indices
-/// to the bucket assignments stored in the generated abstraction.
-fn generated_to_info_abstraction(generated: &GeneratedAbstraction) -> Box<dyn InfoAbstraction> {
-    Box::new(LoadedInfoAbstraction {
-        num_buckets: generated.num_buckets,
-        assignments: generated.assignments.clone(),
-    })
-}
-
-/// Info abstraction loaded from a GeneratedAbstraction.
-///
-/// Simply stores the bucket assignments and provides the InfoAbstraction interface.
-struct LoadedInfoAbstraction {
-    num_buckets: usize,
-    assignments: Vec<u16>,
-}
-
-impl InfoAbstraction for LoadedInfoAbstraction {
-    fn bucket(&self, iso_hand: usize, _context: usize) -> usize {
-        // The assignments are indexed by iso_hand (or global index for multi-board)
-        // For now, we do direct lookup. Multi-context support would need
-        // context-based indexing.
-        if iso_hand < self.assignments.len() {
-            self.assignments[iso_hand] as usize
-        } else {
-            0 // Fallback to bucket 0 if out of range
-        }
-    }
-
-    fn num_buckets(&self) -> usize {
-        self.num_buckets
-    }
 }
 
 #[cfg(test)]

@@ -641,6 +641,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "zstd")]
     fn test_infer_gambit_abstraction_type() {
         use std::path::PathBuf;
 

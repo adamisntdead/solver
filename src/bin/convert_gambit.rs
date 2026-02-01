@@ -1,10 +1,19 @@
 //! Convert Gambit abstraction files to our format.
+//!
+//! Requires the `zstd` feature to be enabled.
 
-use std::path::Path;
-
-use solver::poker::abstraction_io::{load_gambit_abstraction, save_abstraction};
-
+#[cfg(not(feature = "zstd"))]
 fn main() {
+    eprintln!("Error: This binary requires the 'zstd' feature.");
+    eprintln!("Run with: cargo run --bin convert_gambit --features zstd -- <args>");
+    std::process::exit(1);
+}
+
+#[cfg(feature = "zstd")]
+fn main() {
+    use std::path::Path;
+    use solver::poker::abstraction_io::{load_gambit_abstraction, save_abstraction};
+
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 3 {
@@ -22,60 +31,56 @@ fn main() {
     } else {
         convert_single(&args[1], &args[2]);
     }
-}
 
-fn convert_single(input: &str, output: &str) {
-    println!("Converting {} -> {}", input, output);
+    fn convert_single(input: &str, output: &str) {
+        println!("Converting {} -> {}", input, output);
 
-    let abs = load_gambit_abstraction(Path::new(input)).unwrap_or_else(|e| {
-        eprintln!("Failed to load {}: {}", input, e);
-        std::process::exit(1);
-    });
+        let abs = load_gambit_abstraction(Path::new(input)).unwrap_or_else(|e| {
+            eprintln!("Failed to load {}: {:?}", input, e);
+            std::process::exit(1);
+        });
 
-    println!(
-        "  Loaded: {:?} {:?} with {} buckets, {} entries",
-        abs.street,
-        abs.abstraction_type,
-        abs.num_buckets,
-        abs.assignments.len()
-    );
+        println!(
+            "  Loaded: street={:?}, type={:?}, buckets={}, entries={}",
+            abs.street, abs.abs_type, abs.num_buckets, abs.assignments.len()
+        );
 
-    save_abstraction(&abs, Path::new(output)).unwrap_or_else(|e| {
-        eprintln!("Failed to save {}: {}", output, e);
-        std::process::exit(1);
-    });
+        save_abstraction(Path::new(output), &abs).unwrap_or_else(|e| {
+            eprintln!("Failed to save {}: {:?}", output, e);
+            std::process::exit(1);
+        });
 
-    let file_size = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
-    println!("  Saved: {} bytes", file_size);
-}
-
-fn convert_all(gambit_dir: &str, output_dir: &str) {
-    // Create output directory
-    std::fs::create_dir_all(output_dir).unwrap_or_else(|e| {
-        eprintln!("Failed to create output directory: {}", e);
-        std::process::exit(1);
-    });
-
-    // Known Gambit files
-    let files = [
-        ("flop-SEMI-AGG-SI.abs", "flop-SemiAggSI.abs"),
-        ("turn-ASYMEMD2-AGGSI-64000.abs", "turn-AsymEMD-64000.abs"),
-        (
-            "river-WIN2SPLIT2-500-5RESTARTS.abs",
-            "river-WinSplit-500.abs",
-        ),
-    ];
-
-    for (input_name, output_name) in files {
-        let input_path = format!("{}/{}", gambit_dir, input_name);
-        let output_path = format!("{}/{}", output_dir, output_name);
-
-        if Path::new(&input_path).exists() {
-            convert_single(&input_path, &output_path);
-        } else {
-            println!("Skipping {} (not found)", input_path);
-        }
+        // Show file size
+        let size = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
+        println!("  Saved: {} bytes ({:.1} KB)", size, size as f64 / 1024.0);
     }
 
-    println!("\nDone! Converted files are in {}", output_dir);
+    fn convert_all(gambit_dir: &str, output_dir: &str) {
+        let files = [
+            "flop-SEMI-AGG-SI.abs",
+            "turn-ASYMEMD2-AGGSI-64000.abs",
+            "river-WIN2SPLIT2-500.abs",
+        ];
+
+        // Create output directory if needed
+        std::fs::create_dir_all(output_dir).unwrap_or_else(|e| {
+            eprintln!("Failed to create {}: {}", output_dir, e);
+            std::process::exit(1);
+        });
+
+        // Map to our output filenames
+        let output_names = [
+            "flop-SemiAggSI.abs",
+            "turn-AsymEMD-64000.abs",
+            "river-WinSplit-500.abs",
+        ];
+
+        for (input_name, output_name) in files.iter().zip(output_names.iter()) {
+            let input_path = format!("{}/{}", gambit_dir, input_name);
+            let output_path = format!("{}/{}", output_dir, output_name);
+            convert_single(&input_path, &output_path);
+        }
+
+        println!("\nAll files converted successfully!");
+    }
 }
