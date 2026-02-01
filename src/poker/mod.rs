@@ -54,7 +54,10 @@ pub use abstraction::{
     SuitIsomorphism, WinSplitAbstraction,
 };
 pub use abstraction_gen::{AbstractionConfig, AbstractionType, GeneratedAbstraction};
-pub use abstraction_io::{is_gambit_format, load_abstraction, save_abstraction, AbstractionIOError};
+pub use abstraction_io::{
+    is_gambit_format, load_abstraction, load_abstraction_from_bytes, save_abstraction,
+    AbstractionIOError,
+};
 #[cfg(feature = "zstd")]
 pub use abstraction_io::{load_abstraction_auto, load_gambit_abstraction};
 pub use builtin_abstractions::{

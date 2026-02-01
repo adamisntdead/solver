@@ -137,7 +137,7 @@ impl Default for AbstractionConfig {
 }
 
 /// Result of abstraction generation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GeneratedAbstraction {
     /// Street this abstraction is for.
     pub street: Street,

@@ -152,6 +152,32 @@ pub fn load_abstraction(path: &Path) -> Result<GeneratedAbstraction, Abstraction
     let mut header = [0u8; 20];
     reader.read_exact(&mut header)?;
 
+    load_abstraction_from_header_and_reader(header, &mut reader)
+}
+
+/// Load a generated abstraction from a byte slice.
+///
+/// This is useful for WASM where files are fetched as byte arrays.
+pub fn load_abstraction_from_bytes(bytes: &[u8]) -> Result<GeneratedAbstraction, AbstractionIOError> {
+    if bytes.len() < 24 {
+        return Err(AbstractionIOError::DataCorruption(
+            "Not enough bytes for header".to_string(),
+        ));
+    }
+
+    let mut header = [0u8; 20];
+    header.copy_from_slice(&bytes[0..20]);
+
+    let mut cursor = std::io::Cursor::new(&bytes[20..]);
+    load_abstraction_from_header_and_reader(header, &mut cursor)
+}
+
+/// Internal: load abstraction from pre-read header and reader.
+fn load_abstraction_from_header_and_reader<R: Read>(
+    header: [u8; 20],
+    reader: &mut R,
+) -> Result<GeneratedAbstraction, AbstractionIOError> {
+
     let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
     if magic != MAGIC {
         return Err(AbstractionIOError::InvalidMagic);

@@ -17,7 +17,10 @@ import init, {
     get_turn_cards,
     is_node_below_chance,
     get_chance_depth,
-    get_node_strategy_for_context
+    get_node_strategy_for_context,
+    load_abstraction,
+    clear_abstractions,
+    get_loaded_abstractions
 } from '../pkg/solver_wasm.js';
 
 import * as TreeView from './tree-view.js';
@@ -922,6 +925,65 @@ function getActionColor(name, index) {
     return ACTION_COLORS[Math.min(index + 2, ACTION_COLORS.length - 1)];
 }
 
+// Abstraction file paths (relative to webapp root)
+const ABSTRACTION_FILES = {
+    flop: 'data/abstractions/flop-SemiAggSI.abs',
+    turn: 'data/abstractions/turn-AsymEMD-64000.abs',
+    river: 'data/abstractions/river-WinSplit-500.abs'
+};
+
+// Cache for loaded abstraction data
+const abstractionCache = {};
+
+async function loadBuiltinAbstractions(board) {
+    // Determine which streets need abstractions based on board length
+    const boardCards = board.replace(/\s/g, '').length / 2;
+    const streetsNeeded = [];
+
+    if (boardCards <= 3) streetsNeeded.push('flop');
+    if (boardCards <= 4) streetsNeeded.push('turn');
+    if (boardCards <= 5) streetsNeeded.push('river');
+
+    // Clear previous abstractions
+    clear_abstractions();
+
+    // Load each needed abstraction
+    for (const street of streetsNeeded) {
+        const path = ABSTRACTION_FILES[street];
+        if (!path) continue;
+
+        try {
+            // Check cache first
+            let data = abstractionCache[street];
+            if (!data) {
+                console.log(`Fetching ${street} abstraction...`);
+                const response = await fetch(path);
+                if (!response.ok) {
+                    console.warn(`Failed to fetch ${path}: ${response.status}`);
+                    continue;
+                }
+                data = new Uint8Array(await response.arrayBuffer());
+                abstractionCache[street] = data;
+                console.log(`Cached ${street} abstraction: ${data.length} bytes`);
+            }
+
+            // Load into WASM
+            const result = load_abstraction(street, data);
+            if (result.success) {
+                console.log(`Loaded ${street} abstraction: ${result.num_buckets} buckets`);
+            } else {
+                console.warn(`Failed to load ${street} abstraction: ${result.error}`);
+            }
+        } catch (e) {
+            console.warn(`Error loading ${street} abstraction:`, e);
+        }
+    }
+
+    // Log what's loaded
+    const loaded = get_loaded_abstractions();
+    console.log('Loaded abstractions:', loaded);
+}
+
 async function startSolve() {
     if (!wasmLoaded || !treeBuilt || solverRunning) return;
 
@@ -959,6 +1021,20 @@ async function startSolve() {
         turn: null,
         river: null
     } : null;
+
+    // Load abstractions if needed
+    if (abstractionMode === 'builtin') {
+        setStatus('Loading abstractions...');
+        try {
+            await loadBuiltinAbstractions(board);
+        } catch (e) {
+            console.warn('Failed to load abstractions:', e);
+            // Continue without abstractions
+        }
+    } else {
+        // Clear any previously loaded abstractions
+        clear_abstractions();
+    }
 
     // Build solver config - use n-player format
     const solverConfig = {

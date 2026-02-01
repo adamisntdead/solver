@@ -6,7 +6,10 @@ use std::cell::RefCell;
 
 use serde::{Deserialize, Serialize};
 use solver::poker::hands::{combo_to_string, Combo};
-use solver::poker::{parse_board, parse_range, LoadedAbstractions, PostflopGame, PostflopSolver};
+use solver::poker::{
+    load_abstraction_from_bytes, parse_board, parse_range, GeneratedAbstraction,
+    LoadedAbstractions, PostflopGame, PostflopSolver,
+};
 use solver::tree::bet_size::parse_bet_size;
 use solver::{
     ActionTree, BetSizeOptions, BetType, IndexedActionTree, MemoryEstimate, PreflopConfig, Street,
@@ -26,10 +29,114 @@ thread_local! {
     static SOLVER_STATE: RefCell<Option<SolverState>> = RefCell::new(None);
 }
 
+// === Abstraction State ===
+
+struct AbstractionState {
+    flop: Option<GeneratedAbstraction>,
+    turn: Option<GeneratedAbstraction>,
+    river: Option<GeneratedAbstraction>,
+}
+
+thread_local! {
+    static ABSTRACTION_STATE: RefCell<AbstractionState> = RefCell::new(AbstractionState {
+        flop: None,
+        turn: None,
+        river: None,
+    });
+}
+
 /// Initialize panic hook for better error messages in browser console.
 #[wasm_bindgen(start)]
 pub fn init() {
     console_error_panic_hook::set_once();
+}
+
+// === Abstraction Loading ===
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LoadAbstractionResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub street: Option<String>,
+    pub num_buckets: Option<usize>,
+    pub num_entries: Option<usize>,
+}
+
+/// Load an abstraction file for a specific street.
+///
+/// The `street` parameter should be "flop", "turn", or "river".
+/// The `data` parameter is the raw bytes of the .abs file.
+///
+/// Call this before create_solver() to enable hand abstraction.
+#[wasm_bindgen]
+pub fn load_abstraction(street: &str, data: &[u8]) -> JsValue {
+    let result = match load_abstraction_from_bytes(data) {
+        Ok(abs) => {
+            let street_name = format!("{:?}", abs.street).to_lowercase();
+            let num_buckets = abs.num_buckets;
+            let num_entries = abs.assignments.len();
+
+            ABSTRACTION_STATE.with(|state| {
+                let mut state = state.borrow_mut();
+                match street.to_lowercase().as_str() {
+                    "flop" => state.flop = Some(abs),
+                    "turn" => state.turn = Some(abs),
+                    "river" => state.river = Some(abs),
+                    _ => {}
+                }
+            });
+
+            LoadAbstractionResult {
+                success: true,
+                error: None,
+                street: Some(street_name),
+                num_buckets: Some(num_buckets),
+                num_entries: Some(num_entries),
+            }
+        }
+        Err(e) => LoadAbstractionResult {
+            success: false,
+            error: Some(format!("{}", e)),
+            street: None,
+            num_buckets: None,
+            num_entries: None,
+        },
+    };
+
+    serde_wasm_bindgen::to_value(&result).unwrap()
+}
+
+/// Clear all loaded abstractions.
+#[wasm_bindgen]
+pub fn clear_abstractions() {
+    ABSTRACTION_STATE.with(|state| {
+        let mut state = state.borrow_mut();
+        state.flop = None;
+        state.turn = None;
+        state.river = None;
+    });
+}
+
+/// Check which abstractions are currently loaded.
+#[wasm_bindgen]
+pub fn get_loaded_abstractions() -> JsValue {
+    #[derive(Serialize)]
+    struct LoadedInfo {
+        flop: Option<usize>,
+        turn: Option<usize>,
+        river: Option<usize>,
+    }
+
+    let info = ABSTRACTION_STATE.with(|state| {
+        let state = state.borrow();
+        LoadedInfo {
+            flop: state.flop.as_ref().map(|a| a.num_buckets),
+            turn: state.turn.as_ref().map(|a| a.num_buckets),
+            river: state.river.as_ref().map(|a| a.num_buckets),
+        }
+    });
+
+    serde_wasm_bindgen::to_value(&info).unwrap()
 }
 
 /// JSON configuration for a poker spot.
@@ -702,24 +809,30 @@ fn create_solver_internal(config_json: &str) -> CreateSolverResult {
         PostflopGame::new(indexed_tree, board, oop_range, ip_range, pot, effective_stack)
     };
 
-    // Determine abstraction mode
+    // Determine abstraction mode and get loaded abstractions
     let use_abstraction = match &solver_config.abstraction {
         Some(abs_config) => match abs_config.mode.as_deref() {
-            Some("builtin") => true,
-            Some("custom") => true, // TODO: Implement custom file loading
+            Some("builtin") | Some("custom") => true,
             _ => false,
         },
         None => false,
     };
 
-    // Create solver with or without abstraction
-    // Note: For now, loaded abstractions require JavaScript to fetch and pass the data
-    // via a separate WASM function. This is a placeholder for the abstraction support.
+    // Get loaded abstractions from global state
     let loaded_abstractions: Option<LoadedAbstractions> = if use_abstraction {
-        // Abstraction support is enabled but actual file loading is not yet implemented
-        // in WASM. The JavaScript layer will need to fetch .abs files and pass them
-        // via load_abstraction_bytes() (to be implemented).
-        None
+        ABSTRACTION_STATE.with(|state| {
+            let state = state.borrow();
+            // Only create LoadedAbstractions if at least one abstraction is loaded
+            if state.flop.is_some() || state.turn.is_some() || state.river.is_some() {
+                Some(LoadedAbstractions {
+                    flop: state.flop.clone(),
+                    turn: state.turn.clone(),
+                    river: state.river.clone(),
+                })
+            } else {
+                None
+            }
+        })
     } else {
         None
     };
