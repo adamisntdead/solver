@@ -451,3 +451,15 @@ mod tests {
         assert_eq!(iso_hand, 0);
     }
 }
+
+    #[test]
+    fn test_river_enumeration_time() {
+        use std::time::Instant;
+        
+        let start = Instant::now();
+        let enumerator = BoardEnumerator::new(Street::River);
+        let boards = enumerator.enumerate_canonical();
+        let elapsed = start.elapsed();
+        
+        println!("\nRiver enumeration: {} boards in {:.2}s", boards.len(), elapsed.as_secs_f64());
+    }

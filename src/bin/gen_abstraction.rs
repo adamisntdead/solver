@@ -149,6 +149,12 @@ fn main() {
     println!("  Restarts: {}", num_restarts);
     println!("  Max iterations: {}", max_iterations);
     println!("  Output: {}", output.display());
+
+    #[cfg(feature = "rayon")]
+    println!("  Parallelism: {} threads (rayon)", rayon::current_num_threads());
+    #[cfg(not(feature = "rayon"))]
+    println!("  Parallelism: sequential (no rayon)");
+
     println!();
 
     // Configure

@@ -392,7 +392,7 @@ fn generate_ehs_abstraction(
             // Update progress
             let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
             if let Some(ref callback) = config.progress_callback {
-                callback((done * 50 / total_boards) as u32);
+                callback(((done as f64 / total_boards as f64) * 50.0) as u32);
             }
 
             iso_ehs
@@ -420,7 +420,7 @@ fn generate_ehs_abstraction(
             }
 
             if let Some(ref callback) = config.progress_callback {
-                callback((i * 50 / total_boards) as u32);
+                callback(((i as f64 / total_boards as f64) * 50.0) as u32);
             }
 
             iso_ehs
@@ -476,7 +476,7 @@ fn generate_winsplit_abstraction(
             // Update progress
             let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
             if let Some(ref callback) = config.progress_callback {
-                callback((done * 50 / total_boards) as u32);
+                callback(((done as f64 / total_boards as f64) * 50.0) as u32);
             }
 
             features
@@ -493,7 +493,7 @@ fn generate_winsplit_abstraction(
             let features = compute_board_winsplit_fast(&board, &indexer);
 
             if let Some(ref callback) = config.progress_callback {
-                callback((i * 50 / total_boards) as u32);
+                callback(((i as f64 / total_boards as f64) * 50.0) as u32);
             }
 
             features
@@ -531,7 +531,7 @@ fn generate_winsplit_abstraction(
 /// This is much faster than calling compute_winsplit_features for each hand
 /// because we compute all 1326 hand ranks once and then compare in O(1).
 #[cfg(feature = "rand")]
-fn compute_board_winsplit_fast(
+pub fn compute_board_winsplit_fast(
     board: &crate::poker::hands::Board,
     indexer: &SingleBoardIndexer,
 ) -> Vec<[f32; 2]> {
@@ -639,7 +639,7 @@ fn generate_emd_abstraction(
             // Update progress
             let done = processed.fetch_add(1, Ordering::Relaxed) + 1;
             if let Some(ref callback) = config.progress_callback {
-                callback((done * 50 / total_boards) as u32);
+                callback(((done as f64 / total_boards as f64) * 50.0) as u32);
             }
 
             features
@@ -666,7 +666,7 @@ fn generate_emd_abstraction(
             }
 
             if let Some(ref callback) = config.progress_callback {
-                callback((i * 50 / total_boards) as u32);
+                callback(((i as f64 / total_boards as f64) * 50.0) as u32);
             }
 
             features
@@ -737,5 +737,24 @@ mod tests {
         let abs = generate_for_board(&board, AbstractionType::WinSplit, 20);
 
         assert!(abs.num_buckets() <= 20);
+    }
+
+    #[test]
+    #[cfg(feature = "rand")]
+    fn bench_single_board_winsplit() {
+        use std::time::Instant;
+        use crate::poker::indexer::SingleBoardIndexer;
+
+        let board = parse_board("KhQsJs2c3d").unwrap();
+        let indexer = SingleBoardIndexer::new(&board);
+
+        let start = Instant::now();
+        let features = crate::poker::abstraction_gen::compute_board_winsplit_fast(&board, &indexer);
+        let elapsed = start.elapsed();
+
+        println!("\nSingle board WinSplit: {} hands in {:.4}s", features.len(), elapsed.as_secs_f64());
+        println!("Estimated total for 160K boards (sequential): {:.1}s", elapsed.as_secs_f64() * 160537.0);
+        let cores = 8;
+        println!("Estimated total for 160K boards ({} cores): {:.1}s", cores, elapsed.as_secs_f64() * 160537.0 / cores as f64);
     }
 }
