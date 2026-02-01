@@ -386,6 +386,157 @@ pub fn default_filename(
     )
 }
 
+/// Load an abstraction file in Gambit format.
+///
+/// Gambit's .abs format:
+/// - round_id: i32 (0=preflop, 1=flop, 2=turn, 3=river)
+/// - num_buckets: i32
+/// - compressed_size: usize (8 bytes)
+/// - data: zstd-compressed uint32_t bucket assignments
+///
+/// Note: Gambit uses uint32_t for bucket assignments while we use u16.
+/// This function will fail if any bucket value exceeds u16::MAX.
+#[cfg(feature = "zstd")]
+pub fn load_gambit_abstraction(path: &Path) -> Result<GeneratedAbstraction, AbstractionIOError> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+
+    // Read round_id (i32)
+    let mut buf4 = [0u8; 4];
+    reader.read_exact(&mut buf4)?;
+    let round_id = i32::from_le_bytes(buf4);
+    let street = match round_id {
+        0 => Street::Preflop,
+        1 => Street::Flop,
+        2 => Street::Turn,
+        3 => Street::River,
+        _ => return Err(AbstractionIOError::InvalidStreet(round_id as u8)),
+    };
+
+    // Read num_buckets (i32)
+    reader.read_exact(&mut buf4)?;
+    let num_buckets = i32::from_le_bytes(buf4) as usize;
+
+    // Read compressed_size (usize = 8 bytes on 64-bit)
+    let mut buf8 = [0u8; 8];
+    reader.read_exact(&mut buf8)?;
+    let compressed_size = usize::from_le_bytes(buf8);
+
+    // Read compressed data
+    let mut compressed = vec![0u8; compressed_size];
+    reader.read_exact(&mut compressed)?;
+
+    // Decompress using zstd
+    let decompressed = zstd::decode_all(&compressed[..])?;
+
+    // Parse as u32 values (Gambit uses uint32_t)
+    if decompressed.len() % 4 != 0 {
+        return Err(AbstractionIOError::DataCorruption(
+            "Decompressed data size not multiple of 4".to_string(),
+        ));
+    }
+
+    let num_entries = decompressed.len() / 4;
+    let mut assignments = Vec::with_capacity(num_entries);
+
+    for i in 0..num_entries {
+        let offset = i * 4;
+        let value = u32::from_le_bytes([
+            decompressed[offset],
+            decompressed[offset + 1],
+            decompressed[offset + 2],
+            decompressed[offset + 3],
+        ]);
+
+        // Convert u32 to u16, failing if value exceeds u16::MAX
+        if value > u16::MAX as u32 {
+            return Err(AbstractionIOError::DataCorruption(format!(
+                "Bucket value {} exceeds u16::MAX at index {}",
+                value, i
+            )));
+        }
+        assignments.push(value as u16);
+    }
+
+    // Infer abstraction type from filename or use a default
+    // Gambit doesn't store the type in the file, so we use a heuristic
+    let abstraction_type = infer_gambit_abstraction_type(path, street, num_buckets);
+
+    Ok(GeneratedAbstraction {
+        street,
+        abstraction_type,
+        num_buckets,
+        assignments,
+        centers: None, // Gambit doesn't store centers in file
+        num_boards: 0, // Not stored in Gambit format
+    })
+}
+
+/// Infer abstraction type from Gambit filename.
+#[cfg(feature = "zstd")]
+fn infer_gambit_abstraction_type(
+    path: &Path,
+    street: Street,
+    _num_buckets: usize,
+) -> AbstractionType {
+    let filename = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if filename.contains("semi-agg-si") || filename.contains("semiaggsi") {
+        AbstractionType::SemiAggSI
+    } else if filename.contains("asymemd") || filename.contains("asym-emd") {
+        // Check asymemd before aggsi since filenames like "ASYMEMD-AGGSI" should be AsymEMD
+        AbstractionType::AsymEMD
+    } else if filename.contains("agg-si") || filename.contains("aggsi") {
+        AbstractionType::AggSI
+    } else if filename.contains("emd") {
+        AbstractionType::EMD
+    } else if filename.contains("win") || filename.contains("split") {
+        AbstractionType::WinSplit
+    } else if filename.contains("ehs2") || filename.contains("ehssquared") {
+        AbstractionType::EHSSquared
+    } else if filename.contains("ehs") {
+        AbstractionType::EHS
+    } else {
+        // Default based on street
+        match street {
+            Street::Flop => AbstractionType::SemiAggSI,
+            Street::Turn => AbstractionType::AsymEMD,
+            Street::River => AbstractionType::WinSplit,
+            Street::Preflop => AbstractionType::EHS,
+        }
+    }
+}
+
+/// Detect if a file is in Gambit format by checking header.
+pub fn is_gambit_format(path: &Path) -> Result<bool, AbstractionIOError> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+
+    // Read first 4 bytes
+    let mut buf = [0u8; 4];
+    reader.read_exact(&mut buf)?;
+
+    let magic = u32::from_le_bytes(buf);
+
+    // Our format starts with MAGIC (0x41425354 = "ABST")
+    // Gambit format starts with round_id (0, 1, 2, or 3)
+    Ok(magic != MAGIC && magic <= 3)
+}
+
+/// Load an abstraction file, auto-detecting format (ours or Gambit's).
+#[cfg(feature = "zstd")]
+pub fn load_abstraction_auto(path: &Path) -> Result<GeneratedAbstraction, AbstractionIOError> {
+    if is_gambit_format(path)? {
+        load_gambit_abstraction(path)
+    } else {
+        load_abstraction(path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,5 +612,61 @@ mod tests {
     fn test_default_filename() {
         let name = default_filename(Street::River, AbstractionType::EHS, 500);
         assert_eq!(name, "river-EHS-500.abs");
+    }
+
+    #[test]
+    fn test_infer_gambit_abstraction_type() {
+        use std::path::PathBuf;
+
+        let path = PathBuf::from("flop-SEMI-AGG-SI.abs");
+        assert_eq!(
+            infer_gambit_abstraction_type(&path, Street::Flop, 1170),
+            AbstractionType::SemiAggSI
+        );
+
+        // AsymEMD should be detected even with AGGSI in the filename
+        let path = PathBuf::from("turn-ASYMEMD2-AGGSI-64000.abs");
+        assert_eq!(
+            infer_gambit_abstraction_type(&path, Street::Turn, 64000),
+            AbstractionType::AsymEMD
+        );
+
+        // Pure AggSI file
+        let path = PathBuf::from("turn-AGGSI-1000.abs");
+        assert_eq!(
+            infer_gambit_abstraction_type(&path, Street::Turn, 1000),
+            AbstractionType::AggSI
+        );
+
+        let path = PathBuf::from("river-WIN2SPLIT2-500.abs");
+        assert_eq!(
+            infer_gambit_abstraction_type(&path, Street::River, 500),
+            AbstractionType::WinSplit
+        );
+    }
+
+    #[test]
+    fn test_is_gambit_format_detection() {
+        // Create temp file with our format
+        let our_path =
+            std::env::temp_dir().join(format!("test_our_format_{}.abs", std::process::id()));
+        {
+            let mut file = File::create(&our_path).unwrap();
+            file.write_all(&MAGIC.to_le_bytes()).unwrap();
+            file.write_all(&[0u8; 16]).unwrap(); // padding
+        }
+        assert!(!is_gambit_format(&our_path).unwrap());
+        let _ = std::fs::remove_file(&our_path);
+
+        // Create temp file with Gambit format (round_id = 1 for flop)
+        let gambit_path =
+            std::env::temp_dir().join(format!("test_gambit_format_{}.abs", std::process::id()));
+        {
+            let mut file = File::create(&gambit_path).unwrap();
+            file.write_all(&1i32.to_le_bytes()).unwrap(); // round_id = FLOP
+            file.write_all(&[0u8; 16]).unwrap(); // padding
+        }
+        assert!(is_gambit_format(&gambit_path).unwrap());
+        let _ = std::fs::remove_file(&gambit_path);
     }
 }

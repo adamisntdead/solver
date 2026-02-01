@@ -15,13 +15,16 @@
 //! let abs = get_flop_abstraction(&board);
 //! ```
 
-use std::path::Path;
-
 use crate::poker::abstraction::{InfoAbstraction, SemiAggSIAbstraction};
-use crate::poker::abstraction_gen::GeneratedAbstraction;
-use crate::poker::abstraction_io::load_abstraction;
 use crate::poker::hands::Board;
 use crate::tree::Street;
+
+#[cfg(feature = "zstd")]
+use crate::poker::abstraction_gen::GeneratedAbstraction;
+#[cfg(feature = "zstd")]
+use crate::poker::abstraction_io::load_abstraction_auto;
+#[cfg(feature = "zstd")]
+use std::path::Path;
 
 /// Standard abstraction bucket counts (matching Gambit's configuration).
 pub const FLOP_BUCKETS: usize = 1170; // SemiAggSI typical count
@@ -105,42 +108,45 @@ pub fn load_builtin_for_street(
             }
         }
         Street::Turn => {
-            // Try to load from external file
+            // Try to load from external file (requires zstd for Gambit format)
+            #[cfg(feature = "zstd")]
             if let Some(ref path) = config.turn_file {
-                match load_abstraction(Path::new(path)) {
-                    Ok(abs) => Some(Box::new(LoadedBuiltinAbstraction::new(abs))),
-                    Err(_) => None,
+                match load_abstraction_auto(Path::new(path)) {
+                    Ok(abs) => return Some(Box::new(LoadedBuiltinAbstraction::new(abs))),
+                    Err(_) => return None,
                 }
-            } else {
-                None
             }
+            None
         }
         Street::River => {
-            // Try to load from external file
+            // Try to load from external file (requires zstd for Gambit format)
+            #[cfg(feature = "zstd")]
             if let Some(ref path) = config.river_file {
-                match load_abstraction(Path::new(path)) {
-                    Ok(abs) => Some(Box::new(LoadedBuiltinAbstraction::new(abs))),
-                    Err(_) => None,
+                match load_abstraction_auto(Path::new(path)) {
+                    Ok(abs) => return Some(Box::new(LoadedBuiltinAbstraction::new(abs))),
+                    Err(_) => return None,
                 }
-            } else {
-                None
             }
+            None
         }
         _ => None,
     }
 }
 
 /// Wrapper around GeneratedAbstraction to implement InfoAbstraction.
+#[cfg(feature = "zstd")]
 struct LoadedBuiltinAbstraction {
     inner: GeneratedAbstraction,
 }
 
+#[cfg(feature = "zstd")]
 impl LoadedBuiltinAbstraction {
     fn new(abs: GeneratedAbstraction) -> Self {
         Self { inner: abs }
     }
 }
 
+#[cfg(feature = "zstd")]
 impl InfoAbstraction for LoadedBuiltinAbstraction {
     fn bucket(&self, iso_hand: usize, _context: usize) -> usize {
         if iso_hand < self.inner.assignments.len() {
