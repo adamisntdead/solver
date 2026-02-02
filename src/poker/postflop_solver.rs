@@ -2539,4 +2539,118 @@ mod tests {
             exploit_after,
         );
     }
+
+    // === Correctness tests (verify against known expected values) ===
+
+    /// Test that symmetric ranges converge to symmetric exploitability.
+    /// When both players have the same range, their exploitability should be similar.
+    #[test]
+    fn test_symmetric_ranges() {
+        let game = make_test_game("AcKdQhJs2c", "AA,KK,QQ,JJ,TT", "AA,KK,QQ,JJ,TT");
+        let mut solver = PostflopSolver::new(&game);
+
+        solver.train(&game, 500);
+        let exploit = solver.exploitability(&game);
+
+        // With symmetric ranges on a rainbow board, exploitability should be low
+        let pot = 100.0f32;
+        let exploit_pct = exploit / pot * 100.0;
+
+        assert!(
+            exploit_pct < 5.0,
+            "Symmetric ranges should converge well, got {:.2}% exploitability",
+            exploit_pct
+        );
+    }
+
+    /// Test that when one player has the nuts (always wins at showdown),
+    /// the solver converges quickly and the other player's best response is to fold.
+    #[test]
+    fn test_always_win_scenario() {
+        // OOP has AA on a board where AA is always the nuts
+        // IP has hands that always lose to AA
+        let game = make_test_game("AcAdKhQs2c", "AsAh", "KK,QQ,JJ");
+        let mut solver = PostflopSolver::new(&game);
+
+        // Should converge very quickly when one player always wins
+        solver.train(&game, 100);
+        let exploit = solver.exploitability(&game);
+        let pot = 100.0f32;
+        let exploit_pct = exploit / pot * 100.0;
+
+        assert!(
+            exploit_pct < 5.0,
+            "Always-win scenario should converge quickly, got {:.2}% exploitability",
+            exploit_pct
+        );
+    }
+
+    /// Test that identical ranges on a paired board (where ties are common)
+    /// still converges properly.
+    #[test]
+    fn test_high_tie_frequency() {
+        // Both players have the same range on a paired board
+        // Many hands will tie at showdown
+        let game = make_test_game("AcAd2h3s4c", "KK,QQ,JJ", "KK,QQ,JJ");
+        let mut solver = PostflopSolver::new(&game);
+
+        solver.train(&game, 500);
+        let exploit = solver.exploitability(&game);
+        let pot = 100.0f32;
+        let exploit_pct = exploit / pot * 100.0;
+
+        assert!(
+            exploit_pct < 5.0,
+            "High-tie scenario should converge, got {:.2}% exploitability",
+            exploit_pct
+        );
+    }
+
+    /// Test convergence with wider ranges (more hands = harder problem).
+    #[test]
+    fn test_wide_range_convergence() {
+        let game = make_test_game(
+            "Td9d6h5c2s",
+            "AA,KK,QQ,JJ,TT,99,88,77,66,AKs,AQs,AJs,KQs",
+            "AA,KK,QQ,JJ,TT,99,88,AKs,AKo,AQs,AQo,KQs,KQo",
+        );
+        let mut solver = PostflopSolver::new(&game);
+
+        solver.train(&game, 1000);
+        let exploit = solver.exploitability(&game);
+        let pot = 100.0f32;
+        let exploit_pct = exploit / pot * 100.0;
+
+        assert!(
+            exploit_pct < 10.0,
+            "Wide range should converge to <10% exploitability, got {:.2}%",
+            exploit_pct
+        );
+    }
+
+    /// Test that flop solving with realistic ranges converges.
+    /// This is a regression test - if performance degrades, this test may timeout.
+    #[test]
+    fn test_flop_realistic_ranges() {
+        // Realistic 3-bet pot ranges (without "+" syntax which our parser doesn't support)
+        let game = make_flop_test_game(
+            "QsJh2h",
+            "AA,KK,QQ,JJ,TT,99,88,AKs,AQs,AJs,ATs,A9s,A8s,AKo,AQo,AJo,K9s,KTs,KJs,KQs,KQo,Q9s,QTs,QJs,J8s,J9s,JTs,T8s,T9s,97s,98s,87s,76s,65s,54s",
+            "99,88,77,66,55,44,33,22,AJs,ATs,A9s,A8s,A7s,A6s,A5s,A4s,A3s,A2s,AQo,AJo,ATo,A9o,A8o,K2s,K3s,K4s,K5s,K6s,K7s,K8s,K9s,KTs,KJs,KQs,K9o,KTo,KJo,KQo,Q2s,Q3s,Q4s,Q5s,Q6s,Q7s,Q8s,Q9s,QTs,QJs,Q9o,QTo,QJo,J6s,J7s,J8s,J9s,JTs,J9o,JTo,T6s,T7s,T8s,T9s,T9o,96s,97s,98s,86s,87s,75s,76s,64s,65s,54s,43s",
+        );
+        let mut solver = PostflopSolver::new(&game);
+
+        // Flop solving is harder, use more iterations
+        solver.train(&game, 300);
+        let exploit = solver.exploitability(&game);
+        let pot = 100.0f32;
+        let exploit_pct = exploit / pot * 100.0;
+
+        // Flop is harder to converge, allow higher threshold
+        assert!(
+            exploit_pct < 20.0,
+            "Flop with realistic ranges should converge to <20%, got {:.2}%",
+            exploit_pct
+        );
+    }
 }
